@@ -19,6 +19,7 @@ const MAX_EXPORT_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Clone, Debug, Default)]
 struct Row {
     selected: bool,
+    is_new: bool,
     id: String,
     entities: Vec<u64>,
     values: Vec<String>,
@@ -27,7 +28,8 @@ struct Row {
 
 impl Row {
     fn changed(&self, columns: &[ManagerColumn]) -> bool {
-        self.values.iter().zip(&self.original_values).zip(columns).any(|((value, original), column)| column.editable && value != original)
+        self.is_new
+            || self.values.iter().zip(&self.original_values).zip(columns).any(|((value, original), column)| column.editable && value != original)
     }
 }
 
@@ -44,6 +46,11 @@ pub struct State {
     renumber_key: Option<String>,
     allow_delete: bool,
     allow_export: bool,
+    allow_add: bool,
+    allow_entity_actions: bool,
+    allow_synchronize: bool,
+    allow_preview: bool,
+    next_new_id: u64,
     columns: Vec<ManagerColumn>,
     rows: Vec<Row>,
     filter: String,
@@ -60,7 +67,21 @@ pub fn open(app: &mut CadApp, name: &str) -> bool {
     let Some(command) = app.session.extension_command_ui(name) else {
         return false;
     };
-    let CommandUi::Manager { title, description, accent, id_key, entity_ids_key, renumber_key, allow_delete, allow_export, columns } = command.ui
+    let CommandUi::Manager {
+        title,
+        description,
+        accent,
+        id_key,
+        entity_ids_key,
+        renumber_key,
+        allow_delete,
+        allow_export,
+        allow_add,
+        allow_entity_actions,
+        allow_synchronize,
+        allow_preview,
+        columns,
+    } = command.ui
     else {
         return false;
     };
@@ -77,6 +98,11 @@ pub fn open(app: &mut CadApp, name: &str) -> bool {
         renumber_key,
         allow_delete,
         allow_export,
+        allow_add,
+        allow_entity_actions,
+        allow_synchronize,
+        allow_preview,
+        next_new_id: 1,
         columns,
         rows: Vec::new(),
         filter: String::new(),
@@ -101,10 +127,12 @@ pub fn open(app: &mut CadApp, name: &str) -> bool {
 }
 
 enum Action {
+    Add,
     Refresh,
     Select,
     Locate,
     Save,
+    Preview,
     Synchronize,
     Renumber,
     Delete,
@@ -125,13 +153,15 @@ pub fn dialog(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
     app.extension_manager = state;
 
     match action {
+        Some(Action::Add) => add_row(app),
         Some(Action::Refresh) => refresh(app),
         Some(Action::Select) => select_rows(app, false),
         Some(Action::Locate) => select_rows(app, true),
         Some(Action::Save) => save_changes(app),
-        Some(Action::Synchronize) => run_selected_action(app, "synchronize", "Synchronized selected points"),
+        Some(Action::Preview) => preview_changes(app),
+        Some(Action::Synchronize) => run_selected_action(app, "synchronize", "Synchronized selected records"),
         Some(Action::Renumber) => renumber(app),
-        Some(Action::Delete) => run_selected_action(app, "delete", "Deleted selected points"),
+        Some(Action::Delete) => delete_rows(app),
         Some(Action::ExportAll) => export(app, false),
         Some(Action::ExportSelected) => export(app, true),
         None => {}
@@ -150,7 +180,7 @@ fn manager_ui(ui: &mut egui::Ui, state: &mut State, action: &mut Option<Action>)
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.strong("Filter");
-        ui.add(egui::TextEdit::singleline(&mut state.filter).desired_width(280.0).hint_text("number, code, description or status"));
+        ui.add(egui::TextEdit::singleline(&mut state.filter).desired_width(280.0).hint_text("record values or status"));
         if ui.button("Refresh").clicked() {
             *action = Some(Action::Refresh);
         }
@@ -164,14 +194,22 @@ fn manager_ui(ui: &mut egui::Ui, state: &mut State, action: &mut Option<Action>)
     let selected = state.rows.iter().filter(|row| row.selected).count();
     let changed = state.rows.iter().filter(|row| row.changed(&state.columns)).count();
     ui.horizontal_wrapped(|ui| {
-        if ui.add_enabled(selected > 0, egui::Button::new("Select in drawing")).clicked() {
-            *action = Some(Action::Select);
+        if state.allow_add && ui.button("Add record").clicked() {
+            *action = Some(Action::Add);
         }
-        if ui.add_enabled(selected > 0, egui::Button::new("Locate")).clicked() {
-            *action = Some(Action::Locate);
+        if state.allow_entity_actions {
+            if ui.add_enabled(selected > 0, egui::Button::new("Select in drawing")).clicked() {
+                *action = Some(Action::Select);
+            }
+            if ui.add_enabled(selected > 0, egui::Button::new("Locate")).clicked() {
+                *action = Some(Action::Locate);
+            }
         }
-        if ui.add_enabled(selected > 0, egui::Button::new("Synchronize selected")).clicked() {
+        if state.allow_synchronize && ui.add_enabled(selected > 0, egui::Button::new("Synchronize selected")).clicked() {
             *action = Some(Action::Synchronize);
+        }
+        if state.allow_preview && ui.add_enabled(validation.invalid_rows == 0, egui::Button::new("Preview changes")).clicked() {
+            *action = Some(Action::Preview);
         }
         if ui.add_enabled(changed > 0 && validation.invalid_rows == 0, egui::Button::new("Save changes").fill(accent)).clicked() {
             *action = Some(Action::Save);
@@ -398,20 +436,83 @@ fn save_changes(app: &mut CadApp) {
             return;
         }
     };
-    run_and_refresh(app, params, "Saved point changes");
+    run_and_refresh(app, params, "Saved record changes");
+}
+
+fn add_row(app: &mut CadApp) {
+    if app.extension_manager.rows.len() >= MAX_ROWS {
+        app.extension_manager.notice = Some(Err(format!("A manager cannot contain more than {MAX_ROWS} records")));
+        return;
+    }
+    let id = format!("__cadcraft_new_{}", app.extension_manager.next_new_id);
+    app.extension_manager.next_new_id = app.extension_manager.next_new_id.saturating_add(1);
+    app.extension_manager.rows.push(Row {
+        selected: false,
+        is_new: true,
+        id,
+        entities: Vec::new(),
+        values: vec![String::new(); app.extension_manager.columns.len()],
+        original_values: vec![String::new(); app.extension_manager.columns.len()],
+    });
+    app.extension_manager.notice = Some(Ok("Added a blank record. Complete its required fields, then preview or save.".into()));
+}
+
+fn preview_changes(app: &mut CadApp) {
+    let params = match records_parameters(&app.extension_manager, "preview", false) {
+        Ok(params) => params,
+        Err(error) => {
+            app.extension_manager.notice = Some(Err(error));
+            return;
+        }
+    };
+    let selected = selected_ids(&app.extension_manager).into_iter().collect::<BTreeSet<_>>();
+    let command = app.extension_manager.command_id.clone();
+    match app.run(&command, params) {
+        Ok(value) => match replace_preview(&mut app.extension_manager, &value, &selected) {
+            Ok(()) => app.extension_manager.notice = Some(Ok("Preview refreshed without saving changes".into())),
+            Err(error) => app.extension_manager.notice = Some(Err(error)),
+        },
+        Err(error) => app.extension_manager.notice = Some(Err(error)),
+    }
+}
+
+fn replace_preview(state: &mut State, value: &Value, selected: &BTreeSet<String>) -> Result<(), String> {
+    let mut preview = state.clone();
+    replace_rows(&mut preview, value, selected)?;
+    if preview.rows.len() != state.rows.len() {
+        return Err("Extension preview must return the same records it received".into());
+    }
+    for source in &preview.rows {
+        let target = state
+            .rows
+            .iter_mut()
+            .find(|row| row.id == source.id)
+            .ok_or_else(|| format!("Extension preview returned unexpected record '{}'", source.id))?;
+        for (column_index, _) in state.columns.iter().enumerate().filter(|(_, column)| !column.editable) {
+            if let (Some(target_value), Some(source_value)) = (target.values.get_mut(column_index), source.values.get(column_index)) {
+                *target_value = source_value.clone();
+            }
+        }
+    }
+    state.summary = preview.summary;
+    Ok(())
 }
 
 fn update_parameters(state: &State) -> Result<Value, String> {
+    records_parameters(state, "update", true)
+}
+
+fn records_parameters(state: &State, action: &str, changed_only: bool) -> Result<Value, String> {
     let validation = validate(state);
     if validation.invalid_rows > 0 {
         return Err("Fix invalid rows before saving".into());
     }
-    let changed = state.rows.iter().filter(|row| row.changed(&state.columns)).collect::<Vec<_>>();
-    if changed.is_empty() {
+    let included = state.rows.iter().filter(|row| !changed_only || row.changed(&state.columns)).collect::<Vec<_>>();
+    if included.is_empty() && changed_only {
         return Err("No records have changed".into());
     }
-    let mut rows = Vec::with_capacity(changed.len());
-    for row in changed {
+    let mut rows = Vec::with_capacity(included.len());
+    for row in included {
         let mut object = Map::new();
         object.insert(state.id_key.clone(), Value::String(row.id.clone()));
         for (column_index, column) in state.columns.iter().enumerate().filter(|(_, column)| column.editable) {
@@ -424,7 +525,7 @@ fn update_parameters(state: &State) -> Result<Value, String> {
         }
         rows.push(Value::Object(object));
     }
-    Ok(json!({"action": "update", "rows": rows}))
+    Ok(json!({"action": action, "rows": rows}))
 }
 
 fn run_selected_action(app: &mut CadApp, action: &str, success: &str) {
@@ -434,6 +535,18 @@ fn run_selected_action(app: &mut CadApp, action: &str, success: &str) {
         return;
     }
     run_and_refresh(app, json!({"action": action, "ids": ids}), success);
+}
+
+fn delete_rows(app: &mut CadApp) {
+    let existing = app.extension_manager.rows.iter().filter(|row| row.selected && !row.is_new).map(|row| row.id.clone()).collect::<Vec<_>>();
+    let new_count = app.extension_manager.rows.iter().filter(|row| row.selected && row.is_new).count();
+    app.extension_manager.rows.retain(|row| !(row.selected && row.is_new));
+    app.extension_manager.delete_armed = false;
+    if existing.is_empty() {
+        app.extension_manager.notice = Some(Ok(format!("Removed {new_count} unsaved record{}", if new_count == 1 { "" } else { "s" })));
+        return;
+    }
+    run_and_refresh(app, json!({"action": "delete", "ids": existing}), "Deleted selected records");
 }
 
 fn renumber(app: &mut CadApp) {
@@ -501,7 +614,7 @@ fn export(app: &mut CadApp, selected_only: bool) {
         return;
     };
     match save(file_name, content) {
-        Ok(Some(path)) => app.extension_manager.notice = Some(Ok(format!("Exported points to {path}"))),
+        Ok(Some(path)) => app.extension_manager.notice = Some(Ok(format!("Exported records to {path}"))),
         Ok(None) => {}
         Err(error) => app.extension_manager.notice = Some(Err(error)),
     }
@@ -576,7 +689,9 @@ fn replace_rows(state: &mut State, value: &Value, selected: &BTreeSet<String>) -
             };
             values.push(value);
         }
-        parsed.push(Row { selected: selected.contains(&id), id, entities, original_values: values.clone(), values });
+        let is_new = id.starts_with("__cadcraft_new_");
+        let original_values = if is_new { vec![String::new(); values.len()] } else { values.clone() };
+        parsed.push(Row { selected: selected.contains(&id), is_new, id, entities, original_values, values });
     }
     state.rows = parsed;
     state.summary = value
@@ -660,6 +775,24 @@ mod tests {
         if let Some(value) = state.rows.get_mut(0).and_then(|row| row.values.get_mut(0)) {
             *value = "2".into();
         }
+        assert_eq!(update_parameters(&state)?, json!({"action":"update","rows":[{"id":"a","number":"2"}]}));
+        Ok(())
+    }
+
+    #[test]
+    fn preview_updates_read_only_values_without_clearing_dirty_edits() -> Result<(), String> {
+        let mut state = state();
+        replace_rows(&mut state, &json!({"rows":[{"id":"a","entities":[],"number":"1","status":"0 matches"}]}), &BTreeSet::new())?;
+        if let Some(value) = state.rows.get_mut(0).and_then(|row| row.values.get_mut(0)) {
+            *value = "2".into();
+        }
+        replace_preview(
+            &mut state,
+            &json!({"rows":[{"id":"a","entities":[],"number":"2","status":"3 matches"}],"summary":"preview ready"}),
+            &BTreeSet::new(),
+        )?;
+        assert_eq!(state.rows.first().and_then(|row| row.values.get(1)).map(String::as_str), Some("3 matches"));
+        assert_eq!(state.summary, "preview ready");
         assert_eq!(update_parameters(&state)?, json!({"action":"update","rows":[{"id":"a","number":"2"}]}));
         Ok(())
     }

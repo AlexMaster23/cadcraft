@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use cadcraft_doc::{Drawing, Entity, EntityKind, HAlign, Handle, Line, Point, Text, VAlign};
+use cadcraft_doc::{Arc as DrawingArc, Circle, Drawing, Entity, EntityKind, HAlign, Handle, Line, Point, Text, VAlign};
 use cadcraft_extensions::Permission;
 use cadcraft_geom::Vec3;
 use serde_json::Value;
@@ -42,6 +42,22 @@ struct PendingLine {
 }
 
 #[derive(Clone, Debug)]
+struct PendingArc {
+    center: Vec3,
+    radius: f64,
+    start: f64,
+    end: f64,
+    layer: String,
+}
+
+#[derive(Clone, Debug)]
+struct PendingCircle {
+    center: Vec3,
+    radius: f64,
+    layer: String,
+}
+
+#[derive(Clone, Debug)]
 struct PendingPoint {
     position: Vec3,
     layer: String,
@@ -59,6 +75,8 @@ struct PendingText {
 #[derive(Clone, Debug)]
 enum PendingEntity {
     Line(PendingLine),
+    Arc(PendingArc),
+    Circle(PendingCircle),
     Point(PendingPoint),
     Text(PendingText),
 }
@@ -170,6 +188,22 @@ fn layer(value: &str) -> std::result::Result<String, cadcraft::extension::drawin
     }
 }
 
+fn radius(value: f64) -> std::result::Result<f64, cadcraft::extension::drawing::HostError> {
+    if value.is_finite() && value > 0.0 && value <= MAX_COORDINATE {
+        Ok(value)
+    } else {
+        Err(cadcraft::extension::drawing::HostError::InvalidInput("radius must be finite, positive and within the supported drawing range".into()))
+    }
+}
+
+fn angle_degrees(value: f64) -> std::result::Result<f64, cadcraft::extension::drawing::HostError> {
+    if value.is_finite() && value.abs() <= 1.0e12 {
+        Ok(value.to_radians())
+    } else {
+        Err(cadcraft::extension::drawing::HostError::InvalidInput("angle must be finite and bounded".into()))
+    }
+}
+
 fn metadata_key(value: &str) -> std::result::Result<String, cadcraft::extension::drawing::HostError> {
     let value = value.trim();
     if value.is_empty() || value.len() > MAX_METADATA_KEY_BYTES || value.chars().any(char::is_control) {
@@ -192,6 +226,8 @@ fn entity_view(entity: &Entity) -> cadcraft::extension::geometry::EntityView {
 
     let (kind, position, value) = match &entity.kind {
         EntityKind::Line(_) => (ViewKind::Line, None, None),
+        EntityKind::Arc(arc) => (ViewKind::Arc, Some(wit_point3(arc.center)), None),
+        EntityKind::Circle(circle) => (ViewKind::Circle, Some(wit_point3(circle.center)), None),
         EntityKind::Point(point) => (ViewKind::Point, Some(wit_point3(point.p)), None),
         EntityKind::Text(text) => (ViewKind::Text, Some(wit_point3(text.insert)), Some(text.value.clone())),
         _ => (ViewKind::Other, None, None),
@@ -227,6 +263,32 @@ impl cadcraft::extension::drawing::Host for HostState {
         self.require_write()?;
         let pending = PendingLine { start: point3(&request.start)?, end: point3(&request.end)?, layer: layer(&request.layer)? };
         self.push_entity(transaction, PendingEntity::Line(pending))
+    }
+
+    fn create_arc(
+        &mut self,
+        transaction: u64,
+        request: cadcraft::extension::geometry::ArcRequest,
+    ) -> std::result::Result<u64, cadcraft::extension::drawing::HostError> {
+        self.require_write()?;
+        let pending = PendingArc {
+            center: point3(&request.center)?,
+            radius: radius(request.radius)?,
+            start: angle_degrees(request.start_degrees)?,
+            end: angle_degrees(request.end_degrees)?,
+            layer: layer(&request.layer)?,
+        };
+        self.push_entity(transaction, PendingEntity::Arc(pending))
+    }
+
+    fn create_circle(
+        &mut self,
+        transaction: u64,
+        request: cadcraft::extension::geometry::CircleRequest,
+    ) -> std::result::Result<u64, cadcraft::extension::drawing::HostError> {
+        self.require_write()?;
+        let pending = PendingCircle { center: point3(&request.center)?, radius: radius(request.radius)?, layer: layer(&request.layer)? };
+        self.push_entity(transaction, PendingEntity::Circle(pending))
     }
 
     fn create_point(
@@ -548,6 +610,14 @@ impl Session {
                             common.layer = line.layer;
                             EntityKind::Line(Line { a: line.start, b: line.end })
                         }
+                        PendingEntity::Arc(arc) => {
+                            common.layer = arc.layer;
+                            EntityKind::Arc(DrawingArc { center: arc.center, radius: arc.radius, start: arc.start, end: arc.end })
+                        }
+                        PendingEntity::Circle(circle) => {
+                            common.layer = circle.layer;
+                            EntityKind::Circle(Circle { center: circle.center, radius: circle.radius })
+                        }
                         PendingEntity::Point(point) => {
                             common.layer = point.layer;
                             EntityKind::Point(Point { p: point.position, angle: 0.0 })
@@ -695,6 +765,45 @@ mod tests {
             layer: "0".into(),
         };
         assert!(matches!(host.create_line(1, bounded), Err(cadcraft::extension::drawing::HostError::DrawingFailure(_))));
+    }
+
+    #[test]
+    fn native_curve_requests_are_validated_and_undoable() {
+        let mut session = Session::new();
+        let document = session.state().map(|state| state.doc.clone()).unwrap_or_else(|_| Arc::new(Drawing::new_metric()));
+        let mut extension = HostState::new(&[Permission::DrawingWrite], "org.example.curves", document);
+        let transaction = extension.begin_transaction("Extension native curves".into()).unwrap_or_default();
+        let arc = cadcraft::extension::geometry::ArcRequest {
+            center: cadcraft::extension::geometry::Point3 { x: 5.0, y: 5.0, z: 0.0 },
+            radius: 5.0,
+            start_degrees: 0.0,
+            end_degrees: 90.0,
+            layer: "EXT-CURVES".into(),
+        };
+        let circle = cadcraft::extension::geometry::CircleRequest {
+            center: cadcraft::extension::geometry::Point3 { x: 20.0, y: 5.0, z: 0.0 },
+            radius: 2.0,
+            layer: "EXT-CURVES".into(),
+        };
+        assert!(extension.create_arc(transaction, arc).is_ok());
+        assert!(extension.create_circle(transaction, circle).is_ok());
+        assert!(extension.commit_transaction(transaction).is_ok());
+        let Some(transaction) = extension.committed.take() else { return };
+        assert!(session.apply_wasm_transaction(transaction).is_ok());
+        assert_eq!(session.doc().map(|drawing| drawing.entity_count()).ok(), Some(2));
+        assert!(session.doc().is_ok_and(|drawing| drawing.model.iter().any(|entity| matches!(&entity.kind, cadcraft_doc::EntityKind::Arc(_)))));
+        assert!(session.doc().is_ok_and(|drawing| drawing.model.iter().any(|entity| matches!(&entity.kind, cadcraft_doc::EntityKind::Circle(_)))));
+        assert!(session.undo().is_ok());
+        assert_eq!(session.doc().map(|drawing| drawing.entity_count()).ok(), Some(0));
+
+        let mut invalid = host(&[Permission::DrawingWrite]);
+        let transaction = invalid.begin_transaction("Invalid curve".into()).unwrap_or_default();
+        let circle = cadcraft::extension::geometry::CircleRequest {
+            center: cadcraft::extension::geometry::Point3 { x: 0.0, y: 0.0, z: 0.0 },
+            radius: f64::NAN,
+            layer: "0".into(),
+        };
+        assert!(matches!(invalid.create_circle(transaction, circle), Err(cadcraft::extension::drawing::HostError::InvalidInput(_))));
     }
 
     #[test]

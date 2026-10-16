@@ -206,8 +206,24 @@ pub enum CommandUi {
         allow_delete: bool,
         #[serde(default)]
         allow_export: bool,
+        /// Permit the host to append a blank record which the extension may create on save.
+        #[serde(default)]
+        allow_add: bool,
+        /// Show drawing selection and locate actions for records with entity ids.
+        #[serde(default = "default_true")]
+        allow_entity_actions: bool,
+        /// Show the extension-defined synchronize action.
+        #[serde(default = "default_true")]
+        allow_synchronize: bool,
+        /// Let the extension validate and preview the complete edited record set without saving it.
+        #[serde(default)]
+        allow_preview: bool,
         columns: Vec<ManagerColumn>,
     },
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// One user-visible command supplied by an extension.
@@ -494,6 +510,10 @@ impl Manifest {
                 renumber_key,
                 allow_delete: _,
                 allow_export: _,
+                allow_add: _,
+                allow_entity_actions: _,
+                allow_synchronize: _,
+                allow_preview: _,
                 columns,
             }) = &command.ui
             {
@@ -704,6 +724,10 @@ mod tests {
             renumber_key: Some("number".into()),
             allow_delete: true,
             allow_export: true,
+            allow_add: false,
+            allow_entity_actions: true,
+            allow_synchronize: true,
+            allow_preview: false,
             columns: vec![ManagerColumn {
                 key: "number".into(),
                 label: "Point number".into(),

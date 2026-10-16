@@ -13,6 +13,20 @@ interface geometry {
     layer: string,
   }
 
+  record arc-request {
+    center: point3,
+    radius: f64,
+    start-degrees: f64,
+    end-degrees: f64,
+    layer: string,
+  }
+
+  record circle-request {
+    center: point3,
+    radius: f64,
+    layer: string,
+  }
+
   record point-request {
     position: point3,
     layer: string,
@@ -28,6 +42,8 @@ interface geometry {
 
   enum entity-kind {
     line,
+    arc,
+    circle,
     point,
     text,
     other,
@@ -43,7 +59,7 @@ interface geometry {
 }
 
 interface drawing {
-  use geometry.{entity-view, line-request, point-request, text-request};
+  use geometry.{arc-request, circle-request, entity-view, line-request, point-request, text-request};
 
   type transaction-id = u64;
   type entity-id = u64;
@@ -56,6 +72,8 @@ interface drawing {
 
   begin-transaction: func(label: string) -> result<transaction-id, host-error>;
   create-line: func(transaction: transaction-id, request: line-request) -> result<entity-id, host-error>;
+  create-arc: func(transaction: transaction-id, request: arc-request) -> result<entity-id, host-error>;
+  create-circle: func(transaction: transaction-id, request: circle-request) -> result<entity-id, host-error>;
   create-point: func(transaction: transaction-id, request: point-request) -> result<entity-id, host-error>;
   create-text: func(transaction: transaction-id, request: text-request) -> result<entity-id, host-error>;
   get-drawing-metadata: func(key: string) -> result<option<string>, host-error>;

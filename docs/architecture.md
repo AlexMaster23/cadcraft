@@ -101,5 +101,6 @@ allocations are capped (DXF tag counts, DWG size limits, hatch segment and islan
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-16 | minor | Added schema 2 WebAssembly components, explicit drawing permissions, bounded execution and transactional CAD writes |
+| 2026-10-16 | minor | Extended the schema 2 host with native arc/circle creation and generic manager add/preview workflows |
 | 2026-10-16 | minor | Added the portable extension package/store, engine command registry and desktop/CLI host boundary |
 | 2026-10-10 | major | First committed architecture doc, measured from the code (crate sizes, entity kinds, command counts) |

@@ -123,7 +123,7 @@ explicit drawing capabilities:
 CADCraft calls the component world's `run-command(command, parameters-json)` export. `command` is
 the manifest command's `function`; input and output are bounded JSON strings. The
 [WIT contract](../crates/engine/wit/cadcraft-extension.wit) exposes guarded transactions, native
-line/point/text creation, bounded namespaced metadata, entity queries and guarded point/text
+line/arc/circle/point/text creation, bounded namespaced metadata, entity queries and guarded point/text
 updates and deletion. New drawing capabilities are added deliberately and versioned.
 
 The native runtime limits every invocation to 10 million WebAssembly fuel units, 64 MiB memory,
@@ -245,6 +245,10 @@ extension receives explicit JSON actions through its ordinary command function:
     "renumberKey": "number",
     "allowDelete": true,
     "allowExport": true,
+    "allowAdd": false,
+    "allowEntityActions": true,
+    "allowSynchronize": true,
+    "allowPreview": false,
     "columns": [
       {
         "key": "number",
@@ -272,6 +276,12 @@ logical pixels. `idKey` identifies a bounded unique string on every row; `entity
 an array of drawing handles used by **Select in drawing** and **Locate**. The optional
 `renumberKey` must name an editable text column.
 
+`allowAdd` appends host-owned blank records and sends them through `update`; temporary record ids
+begin with `__cadcraft_new_`. `allowEntityActions` and `allowSynchronize` independently hide the
+drawing-selection/location and synchronize controls for non-geometric record sets. `allowPreview`
+adds a non-mutating preview action. These four options default to false, true, true and false,
+respectively, so existing managers retain their behavior.
+
 Opening a manager calls the command with `{"action":"list"}`. Its response contains `rows` and
 may contain a `summary`. CADCraft accepts at most 2,000 rows, 64 KiB per field and 32 drawing
 handles per row, virtualizes the visible body and validates required/numeric/unique fields before
@@ -280,6 +290,7 @@ calling the extension. Host actions use these payloads:
 | Action | Request fields | Purpose |
 |---|---|---|
 | `update` | `rows`: changed objects only | Commit staged cell edits |
+| `preview` | `rows`: every current object | Return the same record ids with refreshed read-only columns and `summary`; editable cells remain dirty |
 | `synchronize` | `ids` | Repair or refresh selected records and linked entities |
 | `renumber` | `ids`, `prefix`, `start`, `step` | Deterministically renumber selected records |
 | `delete` | `ids` | Delete selected records after host-side two-click confirmation |
