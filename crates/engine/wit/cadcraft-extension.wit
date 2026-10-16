@@ -12,10 +12,23 @@ interface geometry {
     end: point3,
     layer: string,
   }
+
+  record point-request {
+    position: point3,
+    layer: string,
+  }
+
+  record text-request {
+    position: point3,
+    value: string,
+    height: f64,
+    rotation-degrees: f64,
+    layer: string,
+  }
 }
 
 interface drawing {
-  use geometry.{line-request};
+  use geometry.{line-request, point-request, text-request};
 
   type transaction-id = u64;
   type entity-id = u64;
@@ -28,6 +41,8 @@ interface drawing {
 
   begin-transaction: func(label: string) -> result<transaction-id, host-error>;
   create-line: func(transaction: transaction-id, request: line-request) -> result<entity-id, host-error>;
+  create-point: func(transaction: transaction-id, request: point-request) -> result<entity-id, host-error>;
+  create-text: func(transaction: transaction-id, request: text-request) -> result<entity-id, host-error>;
   commit-transaction: func(transaction: transaction-id) -> result<_, host-error>;
   rollback-transaction: func(transaction: transaction-id) -> result<_, host-error>;
 }

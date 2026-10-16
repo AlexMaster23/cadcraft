@@ -1,7 +1,8 @@
 use cadcraft_engine::{Extension, Session};
-use cadcraft_extensions::{Command, Manifest};
+use cadcraft_extensions::{Command, CommandUi, Manifest, TableColumn, TableColumnKind};
 use cadcraft_ui_egui::{CadApp, Services, control, menus};
 use semver::{Version, VersionReq};
+use serde_json::json;
 
 fn app() -> CadApp {
     let mut session = Session::new();
@@ -26,6 +27,20 @@ fn app() -> CadApp {
                     params: "{}".into(),
                     function: "MENU:TEST".into(),
                     interactive: false,
+                    ui: Some(CommandUi::Table {
+                        title: "Import points".into(),
+                        description: "Type points or open a CSV file.".into(),
+                        submit_label: "Insert points".into(),
+                        accent: Some("#F47C20".into()),
+                        columns: vec![TableColumn {
+                            key: "number".into(),
+                            label: "Point number".into(),
+                            kind: TableColumnKind::Text,
+                            required: true,
+                            unique: true,
+                            aliases: vec!["point".into()],
+                        }],
+                    }),
                 }],
                 homepage: None,
             },
@@ -34,6 +49,17 @@ fn app() -> CadApp {
         )])
         .unwrap();
     CadApp::new(session, Services::default())
+}
+
+#[test]
+fn human_invocation_opens_the_native_form_but_json_execution_does_not() {
+    let mut app = app();
+    app.start("ZXQMENU");
+    assert_eq!(app.ui.dialog.as_deref(), Some("extension-table"));
+
+    app.ui.dialog = None;
+    assert_eq!(app.run("menutest", json!({ "number": "1" })).ok(), Some(json!(1)));
+    assert!(app.ui.dialog.is_none());
 }
 
 #[test]

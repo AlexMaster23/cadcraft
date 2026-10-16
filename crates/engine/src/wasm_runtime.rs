@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use cadcraft_doc::{EntityKind, Line};
+use cadcraft_doc::{EntityKind, HAlign, Line, Point, Text, VAlign};
 use cadcraft_extensions::Permission;
 use cadcraft_geom::Vec3;
 use serde_json::Value;
@@ -26,6 +26,7 @@ const MAX_OPERATIONS: usize = 10_000;
 const MAX_JSON_BYTES: usize = 1024 * 1024;
 const MAX_LABEL_BYTES: usize = 128;
 const MAX_LAYER_BYTES: usize = 255;
+const MAX_TEXT_BYTES: usize = 1_024;
 const MAX_COORDINATE: f64 = 1.0e15;
 
 #[derive(Clone, Debug)]
@@ -35,11 +36,33 @@ struct PendingLine {
     layer: String,
 }
 
+#[derive(Clone, Debug)]
+struct PendingPoint {
+    position: Vec3,
+    layer: String,
+}
+
+#[derive(Clone, Debug)]
+struct PendingText {
+    position: Vec3,
+    value: String,
+    height: f64,
+    rotation: f64,
+    layer: String,
+}
+
+#[derive(Clone, Debug)]
+enum PendingEntity {
+    Line(PendingLine),
+    Point(PendingPoint),
+    Text(PendingText),
+}
+
 #[derive(Debug)]
 struct Transaction {
     id: u64,
     label: String,
-    lines: Vec<PendingLine>,
+    entities: Vec<PendingEntity>,
 }
 
 struct HostState {
@@ -68,6 +91,37 @@ impl HostState {
             Err(cadcraft::extension::drawing::HostError::PermissionDenied("drawing-write permission is required".into()))
         }
     }
+
+    fn push_entity(&mut self, transaction: u64, entity: PendingEntity) -> std::result::Result<u64, cadcraft::extension::drawing::HostError> {
+        let Some(active) = self.transaction.as_mut().filter(|active| active.id == transaction) else {
+            return Err(cadcraft::extension::drawing::HostError::InvalidInput("transaction is not active".into()));
+        };
+        if active.entities.len() >= MAX_OPERATIONS {
+            return Err(cadcraft::extension::drawing::HostError::DrawingFailure(format!("transaction exceeds {MAX_OPERATIONS} drawing operations")));
+        }
+        let entity_id = self.next_entity_id;
+        self.next_entity_id = self.next_entity_id.saturating_add(1);
+        active.entities.push(entity);
+        Ok(entity_id)
+    }
+}
+
+fn point3(point: &cadcraft::extension::geometry::Point3) -> std::result::Result<Vec3, cadcraft::extension::drawing::HostError> {
+    let coordinates = [point.x, point.y, point.z];
+    if coordinates.iter().any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE) {
+        Err(cadcraft::extension::drawing::HostError::InvalidInput("coordinates must be finite and within the supported drawing range".into()))
+    } else {
+        Ok(Vec3::new(point.x, point.y, point.z))
+    }
+}
+
+fn layer(value: &str) -> std::result::Result<String, cadcraft::extension::drawing::HostError> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > MAX_LAYER_BYTES || value.chars().any(char::is_control) {
+        Err(cadcraft::extension::drawing::HostError::InvalidInput("layer must contain 1 to 255 printable bytes".into()))
+    } else {
+        Ok(value.to_owned())
+    }
 }
 
 impl cadcraft::extension::geometry::Host for HostState {}
@@ -82,7 +136,7 @@ impl cadcraft::extension::drawing::Host for HostState {
         if label.is_empty() || label.len() > MAX_LABEL_BYTES || label.chars().any(char::is_control) {
             return Err(cadcraft::extension::drawing::HostError::InvalidInput("transaction label must contain 1 to 128 printable bytes".into()));
         }
-        self.transaction = Some(Transaction { id: 1, label: label.to_owned(), lines: Vec::new() });
+        self.transaction = Some(Transaction { id: 1, label: label.to_owned(), entities: Vec::new() });
         Ok(1)
     }
 
@@ -92,30 +146,44 @@ impl cadcraft::extension::drawing::Host for HostState {
         request: cadcraft::extension::geometry::LineRequest,
     ) -> std::result::Result<u64, cadcraft::extension::drawing::HostError> {
         self.require_write()?;
-        let Some(active) = self.transaction.as_mut().filter(|active| active.id == transaction) else {
-            return Err(cadcraft::extension::drawing::HostError::InvalidInput("transaction is not active".into()));
+        let pending = PendingLine { start: point3(&request.start)?, end: point3(&request.end)?, layer: layer(&request.layer)? };
+        self.push_entity(transaction, PendingEntity::Line(pending))
+    }
+
+    fn create_point(
+        &mut self,
+        transaction: u64,
+        request: cadcraft::extension::geometry::PointRequest,
+    ) -> std::result::Result<u64, cadcraft::extension::drawing::HostError> {
+        self.require_write()?;
+        let pending = PendingPoint { position: point3(&request.position)?, layer: layer(&request.layer)? };
+        self.push_entity(transaction, PendingEntity::Point(pending))
+    }
+
+    fn create_text(
+        &mut self,
+        transaction: u64,
+        request: cadcraft::extension::geometry::TextRequest,
+    ) -> std::result::Result<u64, cadcraft::extension::drawing::HostError> {
+        self.require_write()?;
+        let value = request.value.trim();
+        if value.is_empty() || value.len() > MAX_TEXT_BYTES || value.chars().any(char::is_control) {
+            return Err(cadcraft::extension::drawing::HostError::InvalidInput("text must contain 1 to 1024 printable bytes".into()));
+        }
+        if !request.height.is_finite() || request.height <= 0.0 || request.height > MAX_COORDINATE {
+            return Err(cadcraft::extension::drawing::HostError::InvalidInput("text height must be finite and positive".into()));
+        }
+        if !request.rotation_degrees.is_finite() {
+            return Err(cadcraft::extension::drawing::HostError::InvalidInput("text rotation must be finite".into()));
+        }
+        let pending = PendingText {
+            position: point3(&request.position)?,
+            value: value.to_owned(),
+            height: request.height,
+            rotation: request.rotation_degrees.to_radians(),
+            layer: layer(&request.layer)?,
         };
-        if active.lines.len() >= MAX_OPERATIONS {
-            return Err(cadcraft::extension::drawing::HostError::DrawingFailure(format!("transaction exceeds {MAX_OPERATIONS} drawing operations")));
-        }
-        let coordinates = [request.start.x, request.start.y, request.start.z, request.end.x, request.end.y, request.end.z];
-        if coordinates.iter().any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE) {
-            return Err(cadcraft::extension::drawing::HostError::InvalidInput(
-                "line coordinates must be finite and within the supported drawing range".into(),
-            ));
-        }
-        let layer = request.layer.trim();
-        if layer.is_empty() || layer.len() > MAX_LAYER_BYTES || layer.chars().any(char::is_control) {
-            return Err(cadcraft::extension::drawing::HostError::InvalidInput("layer must contain 1 to 255 printable bytes".into()));
-        }
-        let entity_id = self.next_entity_id;
-        self.next_entity_id = self.next_entity_id.saturating_add(1);
-        active.lines.push(PendingLine {
-            start: Vec3::new(request.start.x, request.start.y, request.start.z),
-            end: Vec3::new(request.end.x, request.end.y, request.end.z),
-            layer: layer.to_owned(),
-        });
-        Ok(entity_id)
+        self.push_entity(transaction, PendingEntity::Text(pending))
     }
 
     fn commit_transaction(&mut self, transaction: u64) -> std::result::Result<(), cadcraft::extension::drawing::HostError> {
@@ -202,10 +270,35 @@ impl Session {
         let space = self.space();
         let base_common = self.current_common();
         let mut drawing = (*before).clone();
-        for pending in transaction.lines {
+        let text_style = drawing.header.str("TEXTSTYLE", "Standard");
+        for pending in transaction.entities {
             let mut common = base_common.clone();
-            common.layer = pending.layer;
-            drawing.add(&space, common, EntityKind::Line(Line { a: pending.start, b: pending.end }))?;
+            let kind = match pending {
+                PendingEntity::Line(line) => {
+                    common.layer = line.layer;
+                    EntityKind::Line(Line { a: line.start, b: line.end })
+                }
+                PendingEntity::Point(point) => {
+                    common.layer = point.layer;
+                    EntityKind::Point(Point { p: point.position, angle: 0.0 })
+                }
+                PendingEntity::Text(text) => {
+                    common.layer = text.layer;
+                    EntityKind::Text(Text {
+                        insert: text.position,
+                        align_pt: None,
+                        height: text.height,
+                        value: text.value,
+                        rotation: text.rotation,
+                        width_factor: 1.0,
+                        oblique: 0.0,
+                        style: text_style.clone(),
+                        halign: HAlign::Left,
+                        valign: VAlign::Baseline,
+                    })
+                }
+            };
+            drawing.add(&space, common, kind)?;
         }
         let state = self.state_mut()?;
         state.doc = Arc::new(drawing);
@@ -222,7 +315,7 @@ impl Session {
 mod tests {
     use cadcraft_extensions::Permission;
 
-    use super::{HostState, MAX_OPERATIONS, PendingLine, Transaction, cadcraft};
+    use super::{HostState, MAX_OPERATIONS, PendingEntity, PendingLine, PendingPoint, PendingText, Transaction, cadcraft};
     use crate::Session;
     use crate::wasm_runtime::cadcraft::extension::drawing::Host as _;
 
@@ -249,11 +342,13 @@ mod tests {
         };
         assert!(matches!(host.create_line(1, invalid), Err(cadcraft::extension::drawing::HostError::InvalidInput(_))));
         if let Some(transaction) = host.transaction.as_mut() {
-            transaction.lines = Vec::with_capacity(MAX_OPERATIONS);
-            transaction.lines.resize_with(MAX_OPERATIONS, || super::PendingLine {
-                start: cadcraft_geom::Vec3::ZERO,
-                end: cadcraft_geom::Vec3::new(1.0, 0.0, 0.0),
-                layer: "0".into(),
+            transaction.entities = Vec::with_capacity(MAX_OPERATIONS);
+            transaction.entities.resize_with(MAX_OPERATIONS, || {
+                PendingEntity::Line(super::PendingLine {
+                    start: cadcraft_geom::Vec3::ZERO,
+                    end: cadcraft_geom::Vec3::new(1.0, 0.0, 0.0),
+                    layer: "0".into(),
+                })
             });
         }
         let bounded = cadcraft::extension::geometry::LineRequest {
@@ -271,16 +366,26 @@ mod tests {
         assert!(before.is_ok());
         let transaction = Transaction {
             id: 1,
-            label: "SurveyCraft reference line".into(),
-            lines: vec![PendingLine {
-                start: cadcraft_geom::Vec3::ZERO,
-                end: cadcraft_geom::Vec3::new(10.0, 0.0, 0.0),
-                layer: "SURVEY_REFERENCE".into(),
-            }],
+            label: "Extension reference entities".into(),
+            entities: vec![
+                PendingEntity::Line(PendingLine {
+                    start: cadcraft_geom::Vec3::ZERO,
+                    end: cadcraft_geom::Vec3::new(10.0, 0.0, 0.0),
+                    layer: "SURVEY_REFERENCE".into(),
+                }),
+                PendingEntity::Point(PendingPoint { position: cadcraft_geom::Vec3::new(5.0, 2.0, 1.0), layer: "SURVEY_POINTS".into() }),
+                PendingEntity::Text(PendingText {
+                    position: cadcraft_geom::Vec3::new(5.25, 2.25, 1.0),
+                    value: "101".into(),
+                    height: 0.25,
+                    rotation: 0.0,
+                    layer: "SURVEY_LABELS".into(),
+                }),
+            ],
         };
         assert!(session.apply_wasm_transaction(transaction).is_ok());
         assert_eq!(session.state().map(|state| state.undo.len()).ok(), Some(1));
-        assert_eq!(session.doc().map(|drawing| drawing.entity_count()).ok(), Some(1));
+        assert_eq!(session.doc().map(|drawing| drawing.entity_count()).ok(), Some(3));
         assert!(session.undo().is_ok());
         assert_eq!(session.doc().map(|drawing| drawing.entity_count()).ok(), Some(0));
     }

@@ -35,6 +35,7 @@ rayon = "1"
 semver = { version = "1", features = ["serde"] }
 zip = { version = "6", default-features = false, features = ["deflate"] }
 wasmtime = { version = "40.0.2", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
+csv = "1.4"
 
 # rendering / formats
 tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd", "png-format"] }

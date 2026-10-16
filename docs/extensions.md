@@ -122,8 +122,8 @@ explicit drawing capabilities:
 
 CADCraft calls the component world's `run-command(command, parameters-json)` export. `command` is
 the manifest command's `function`; input and output are bounded JSON strings. The initial
-[WIT contract](../crates/engine/wit/cadcraft-extension.wit) exposes only guarded transactions and
-line creation. New drawing capabilities will be added deliberately and versioned.
+[WIT contract](../crates/engine/wit/cadcraft-extension.wit) exposes guarded transactions and native
+line, point and text creation. New drawing capabilities will be added deliberately and versioned.
 
 The native runtime limits every invocation to 10 million WebAssembly fuel units, 64 MiB memory,
 10,000 drawing operations, and 1 MiB input/output JSON. A command may open one transaction. Host
@@ -134,6 +134,61 @@ transaction becomes one normal CADCraft undo step.
 Command IDs and aliases cannot shadow CADCraft commands, built-in aliases or another enabled
 extension. Disabling or uninstalling an extension removes its declared commands from every command
 surface immediately.
+
+## Host-rendered command tables
+
+A non-interactive command can declare an optional native table dialog. CADCraft owns and renders
+the window; the extension supplies only bounded labels, columns and validation metadata:
+
+```json
+{
+  "id": "survey.points.import",
+  "label": "Import points...",
+  "menu": ["Survey", "Points", "Import points..."],
+  "aliases": ["SURVEYPOINTS"],
+  "function": "insert-points",
+  "interactive": false,
+  "ui": {
+    "kind": "table",
+    "title": "Import points",
+    "description": "Enter rows or open a coordinate file, then review them before insertion.",
+    "submitLabel": "Insert points",
+    "accent": "#F47C20",
+    "columns": [
+      {
+        "key": "number",
+        "label": "Point number",
+        "kind": "text",
+        "required": true,
+        "unique": true,
+        "aliases": ["point", "id"]
+      },
+      {
+        "key": "easting",
+        "label": "Easting (X)",
+        "kind": "number",
+        "required": true,
+        "aliases": ["e", "x"]
+      }
+    ]
+  }
+}
+```
+
+`kind` is `text` or `number`; `required` and `unique` are optional booleans. Column keys must be
+unique and become keys in the submitted JSON row. `aliases` are case-insensitive CSV header names.
+The optional accent is a `#RRGGBB` color. Manifests may declare 1–12 columns.
+
+A menu, toolbar or typed-command invocation opens the table. Rows can be entered manually or
+loaded from a user-selected UTF-8 CSV/text file; comma, semicolon and tab delimiters are supported.
+CADCraft limits input to 2,000 rows, 64 KiB per field and 8 MiB per selected file. Only validated
+non-empty rows are submitted as `{"rows":[...]}`. Programmatic invocation through `CadApp::run`,
+the control channel or CLI remains dialog-free and passes the caller's JSON directly to the guest.
+
+File selection is a host action: a schema 2 guest receives only the submitted JSON and gains no
+ambient file-system access. Declarative tables are intentionally narrower than arbitrary
+extension-owned windows; future UI kinds can extend the versioned manifest without allowing guest
+code to run inside the renderer.
 
 ## Permissions and trust
 

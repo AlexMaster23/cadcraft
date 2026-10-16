@@ -12,7 +12,7 @@ mod package;
 #[cfg(not(target_arch = "wasm32"))]
 mod store;
 
-pub use manifest::{Command, Manifest, Permission, Runtime, ValidationError, WASM_WORLD};
+pub use manifest::{Command, CommandUi, Manifest, Permission, Runtime, TableColumn, TableColumnKind, ValidationError, WASM_WORLD};
 pub use package::{Package, PackageError};
 #[cfg(not(target_arch = "wasm32"))]
 pub use store::{Installed, Store, StoreError};

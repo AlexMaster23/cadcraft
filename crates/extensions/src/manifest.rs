@@ -28,6 +28,45 @@ pub enum Runtime {
     WasmComponent { entrypoint: String, world: String },
 }
 
+/// Value accepted by one column of a host-rendered table dialog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TableColumnKind {
+    Text,
+    Number,
+}
+
+/// One bounded, declarative column rendered by CADCraft rather than extension code.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableColumn {
+    pub key: String,
+    pub label: String,
+    pub kind: TableColumnKind,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub unique: bool,
+    /// Case-insensitive CSV header names accepted in addition to `key` and `label`.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
+/// Optional native UI presented only for a menu, toolbar or typed invocation. Programmatic
+/// command execution still calls the guest directly and never opens a dialog.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
+pub enum CommandUi {
+    Table {
+        title: String,
+        description: String,
+        submit_label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        accent: Option<String>,
+        columns: Vec<TableColumn>,
+    },
+}
+
 /// One user-visible command supplied by an extension.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -50,6 +89,9 @@ pub struct Command {
     /// calls `function` with null parameters.
     #[serde(default)]
     pub interactive: bool,
+    /// A host-owned declarative dialog whose submitted object is passed to `function`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<CommandUi>,
 }
 
 /// Root `extension.json` document.
@@ -57,7 +99,7 @@ pub struct Command {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Manifest {
     pub schema_version: u32,
-    /// Reverse-DNS identifier such as `org.cadcraft.surveycraft`.
+    /// Reverse-DNS identifier such as `org.example.drafting-tools`.
     pub id: String,
     pub name: String,
     pub version: Version,
@@ -119,6 +161,14 @@ fn lisp_symbol(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-' | '*' | '+' | '.' | '?' | '!'))
+}
+
+fn printable(value: &str, maximum: usize) -> bool {
+    !value.trim().is_empty() && value.len() <= maximum && !value.chars().any(char::is_control)
+}
+
+fn color(value: &str) -> bool {
+    value.len() == 7 && value.starts_with('#') && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// A portable relative package path: forward slashes, no empty/dot/parent component.
@@ -227,6 +277,33 @@ impl Manifest {
             if self.schema_version == 2 && command.interactive {
                 return Err(ValidationError::new(format!("{base}.interactive"), "schema 2 commands are programmatic in this release"));
             }
+            if let Some(CommandUi::Table { title, description, submit_label, accent, columns }) = &command.ui {
+                if command.interactive {
+                    return Err(ValidationError::new(format!("{base}.ui"), "a host-rendered dialog cannot also use an interactive command prompt"));
+                }
+                if !printable(title, 100) || !printable(description, 500) || !printable(submit_label, 80) {
+                    return Err(ValidationError::new(format!("{base}.ui"), "title, description and submitLabel must be bounded printable text"));
+                }
+                if accent.as_deref().is_some_and(|value| !color(value)) {
+                    return Err(ValidationError::new(format!("{base}.ui.accent"), "must be a #RRGGBB colour"));
+                }
+                if columns.is_empty() || columns.len() > 12 {
+                    return Err(ValidationError::new(format!("{base}.ui.columns"), "must contain between 1 and 12 columns"));
+                }
+                let mut keys = HashSet::new();
+                for (column_index, column) in columns.iter().enumerate() {
+                    let field = format!("{base}.ui.columns[{column_index}]");
+                    if column.key.len() > 64 || !command_name(&column.key) || !keys.insert(column.key.to_ascii_lowercase()) {
+                        return Err(ValidationError::new(format!("{field}.key"), "must be a unique lower-case field name"));
+                    }
+                    if !printable(&column.label, 80) {
+                        return Err(ValidationError::new(format!("{field}.label"), "must contain 1 to 80 printable characters"));
+                    }
+                    if column.aliases.len() > 16 || column.aliases.iter().any(|alias| !printable(alias, 80)) {
+                        return Err(ValidationError::new(format!("{field}.aliases"), "must contain at most 16 bounded printable aliases"));
+                    }
+                }
+            }
         }
         if let Some(homepage) = &self.homepage
             && (homepage.len() > 500 || !(homepage.starts_with("https://") || homepage.starts_with("http://")))
@@ -277,6 +354,7 @@ mod tests {
                 params: "{name?}".into(),
                 function: "EXAMPLE:HELLO".into(),
                 interactive: true,
+                ui: None,
             }],
             homepage: Some("https://example.invalid/extension".into()),
         }
@@ -307,12 +385,33 @@ mod tests {
         let mut manifest = good();
         manifest.schema_version = 2;
         manifest.entrypoint = None;
-        manifest.runtime = Some(Runtime::WasmComponent { entrypoint: "surveycraft.wasm".into(), world: WASM_WORLD.into() });
+        manifest.runtime = Some(Runtime::WasmComponent { entrypoint: "extension.wasm".into(), world: WASM_WORLD.into() });
         manifest.permissions = vec![Permission::DrawingRead, Permission::DrawingWrite];
         manifest.commands[0].function = "reference-line".into();
         manifest.commands[0].interactive = false;
         assert!(manifest.validate().is_ok());
-        assert_eq!(manifest.entrypoint_path(), Some("surveycraft.wasm"));
+        assert_eq!(manifest.entrypoint_path(), Some("extension.wasm"));
         assert!(manifest.is_wasm());
+    }
+
+    #[test]
+    fn accepts_a_bounded_native_table_dialog() {
+        let mut manifest = good();
+        manifest.commands[0].interactive = false;
+        manifest.commands[0].ui = Some(CommandUi::Table {
+            title: "Import points".into(),
+            description: "Type rows or open a CSV file.".into(),
+            submit_label: "Insert points".into(),
+            accent: Some("#F47C20".into()),
+            columns: vec![TableColumn {
+                key: "number".into(),
+                label: "Point number".into(),
+                kind: TableColumnKind::Text,
+                required: true,
+                unique: true,
+                aliases: vec!["point".into()],
+            }],
+        });
+        assert!(manifest.validate().is_ok());
     }
 }

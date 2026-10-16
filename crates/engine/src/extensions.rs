@@ -18,6 +18,14 @@ pub struct Extension {
     pub enabled: bool,
 }
 
+/// Host-rendered UI attached to an enabled extension command.
+#[derive(Clone, Debug)]
+pub struct ExtensionCommandUi {
+    pub command_id: String,
+    pub extension_name: String,
+    pub ui: cadcraft_extensions::CommandUi,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum ExtensionProgram {
     AutoLisp(String),
@@ -183,6 +191,18 @@ impl Session {
         })
     }
 
+    /// Resolve an extension id or alias to the declarative UI a human invocation should open.
+    /// Headless and JSON callers do not use this method.
+    pub fn extension_command_ui(&self, name: &str) -> Option<ExtensionCommandUi> {
+        let command_id = self.resolve_extension_command(name)?;
+        let (extension, command) = self.extension_command(&command_id)?;
+        let info = self.command_info(&command_id)?;
+        if !info.enabled {
+            return None;
+        }
+        Some(ExtensionCommandUi { command_id, extension_name: extension.manifest.name.clone(), ui: command.ui.clone()? })
+    }
+
     pub(crate) fn resolve_extension_command(&self, name: &str) -> Option<String> {
         self.extensions.resolve(name)
     }
@@ -241,6 +261,7 @@ mod tests {
                     params: "{}".into(),
                     function: "EXAMPLE:RUN".into(),
                     interactive: true,
+                    ui: None,
                 }],
                 homepage: None,
             },

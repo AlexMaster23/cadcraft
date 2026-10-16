@@ -118,7 +118,7 @@ Ranked; detail and the full beta checklist in [docs/roadmap.md](docs/roadmap.md)
 
 | Date | Entry |
 |---|---|
-| 2026-10-16 | Schema-2 extensions: native WebAssembly components with explicit drawing permissions, fuel/memory/operation limits and atomic one-step-undo transactions. A SurveyCraft reference component installed and created/undid a real CAD line end to end. |
+| 2026-10-16 | Schema-2 extensions: native WebAssembly components with explicit drawing permissions, fuel/memory/operation limits and atomic one-step-undo transactions. A separately built reference component installed and created/undid a real CAD line end to end. |
 | 2026-10-16 | Schema-1 extensions: validated/versioned packages, install/enable/disable/uninstall, commands and menus in every command surface, per-drawing AutoLISP entry points with declared direct-file permissions, a desktop manager, CLI management/packing, docs and an example. Ecosystem/automation 10% → 15%. |
 | 2026-10-12 | TRIM: a pick after a closed polyline's last cut keeps only the complementary run instead of an extra circuit of the outline (#726) |
 | 2026-10-12 | HATCHEDIT refuses an explicit bad `scale` or `angle` before it edits anything, so a rejected request leaves the drawing, undo and redo as they were (#724) |

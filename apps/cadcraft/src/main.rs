@@ -27,7 +27,7 @@ mod system_animations;
 mod workspace;
 
 use cadcraft_engine::Session;
-use cadcraft_ui_egui::{CadApp, Services, i18n};
+use cadcraft_ui_egui::{CadApp, LoadedTextTable, Services, i18n};
 
 struct App {
     cad: CadApp,
@@ -143,6 +143,23 @@ fn services() -> Services {
                 .fold(rfd::FileDialog::new().set_file_name(name), |d, (label, ext)| d.add_filter(i18n::t(label), &[*ext]))
                 .save_file()
                 .map(|p| p.to_string_lossy().to_string())
+        })),
+        pick_extension_table: Some(Box::new(|| {
+            const MAX_TABLE_BYTES: u64 = 8 * 1024 * 1024;
+            let Some(path) = rfd::FileDialog::new()
+                .add_filter("Point tables (CSV, COO, TXT, XYZ)", &["csv", "coo", "txt", "xyz"])
+                .add_filter("All files", &["*"])
+                .pick_file()
+            else {
+                return Ok(None);
+            };
+            let size = std::fs::metadata(&path).map_err(|error| format!("Cannot inspect {}: {error}", path.display()))?.len();
+            if size > MAX_TABLE_BYTES {
+                return Err(format!("{} is larger than the 8 MB table limit", path.display()));
+            }
+            let text = std::fs::read_to_string(&path).map_err(|error| format!("Cannot read {} as UTF-8 text: {error}", path.display()))?;
+            let name = path.file_name().map_or_else(|| path.to_string_lossy().to_string(), |name| name.to_string_lossy().to_string());
+            Ok(Some(LoadedTextTable { name, text }))
         })),
         ..Default::default()
     };
