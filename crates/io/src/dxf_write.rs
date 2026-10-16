@@ -1761,6 +1761,9 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
     if let Some(chunks) = dxf_ext::anno_chunks(d) {
         xrecords.push((dxf_ext::ANNOTATION_KEY, w.h(), chunks));
     }
+    if let Some(chunks) = dxf_ext::extension_data_chunks(&d.extension_data) {
+        xrecords.push((dxf_ext::EXTENSION_DATA_KEY, w.h(), chunks));
+    }
     // The annotation scale list: the ACAD_SCALELIST dictionary of SCALE objects.
     let scale_dict = w.h();
     let scales: Vec<(&cadcraft_doc::AnnoScale, String)> = d.scales.iter().filter(|s| s.is_valid()).map(|s| (s, w.h())).collect();

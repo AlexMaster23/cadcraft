@@ -5,6 +5,7 @@ use cadcraft_geom::{
     Arc as GArc, Bounds2, Circle as GCircle, Ellipse as GEllipse, Line as GLine, Mat3, PolyVertex, Polyline, Segment, Spline as GSpline, Vec2, Vec3,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 mod mline;
 pub use mline::*;
@@ -108,6 +109,10 @@ pub struct Common {
     /// object (COPY, MIRROR, ARRAY, paste) carries it, as in AutoCAD.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub xdata: Vec<RawTag>,
+    /// Bounded metadata owned by extensions, grouped by extension id. CADCraft serializes this
+    /// separately from foreign xdata so one extension cannot overwrite another's values.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extension_data: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl Default for Common {
@@ -125,6 +130,7 @@ impl Default for Common {
             plot_style: "ByLayer".into(),
             anno_scales: Vec::new(),
             xdata: Vec::new(),
+            extension_data: BTreeMap::new(),
         }
     }
 }

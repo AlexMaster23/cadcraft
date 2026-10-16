@@ -43,7 +43,7 @@ const MODELLED_XDICT_KEYS: &[&str] = &["ACAD_DIMASSOC", "ACAD_SORTENTS", "ACDBCO
 
 /// Applications whose xdata CADCraft reads and writes itself. `ACAD` holds dimension overrides
 /// (DSTYLE) on dimensions and dimension styles; elsewhere it is kept.
-const OWN_APPS: &[&str] = &["CADCRAFT", "ACADANNOTATIVE", "ACCMTRANSPARENCY", "ACAECLAYERSTANDARD"];
+const OWN_APPS: &[&str] = &["CADCRAFT", "CADCRAFT_EXTENSIONS", "ACADANNOTATIVE", "ACCMTRANSPARENCY", "ACAECLAYERSTANDARD"];
 
 /// Most objects kept from one file.
 const MAX_OBJECTS: usize = 1_000_000;
@@ -433,6 +433,10 @@ pub(crate) fn read(secs: &[Section], d: &mut Drawing) {
         let Some(&unknown) = ents.get(&h) else { continue };
         let mut x = extra(kind, t, true, unknown, &kept);
         let Some(hh) = handle(&h) else { continue };
+        let extension_data = crate::dxf_ext::read_extension_entity_data(t);
+        if !extension_data.is_empty() {
+            let _ = d.modify_entity(hh, |entity| entity.common.extension_data = extension_data);
+        }
         // Xdata belongs to the entity itself (it follows the entity's copies).
         let xd = std::mem::take(&mut x.xdata);
         if !xd.is_empty() {
@@ -761,7 +765,14 @@ fn unknown_handles(d: &Drawing) -> HashSet<String> {
 pub(crate) fn finish(tags: &mut Vec<Tag>, d: &Drawing) {
     let f = d.foreign.as_ref();
     let unknown = unknown_handles(d);
-    let xd: XdataOf = all_entities(d).filter(|e| !e.common.xdata.is_empty()).map(|e| (e.handle, e.common.xdata.as_slice())).collect();
+    let xd_owned: HashMap<Handle, Vec<RawTag>> = all_entities(d)
+        .filter_map(|entity| {
+            let mut data = entity.common.xdata.clone();
+            data.extend(crate::dxf_ext::extension_entity_xdata(&entity.common.extension_data).iter().map(raw));
+            (!data.is_empty()).then_some((entity.handle, data))
+        })
+        .collect();
+    let xd: XdataOf = xd_owned.iter().map(|(handle, data)| (*handle, data.as_slice())).collect();
     if f.is_empty() && unknown.is_empty() && xd.is_empty() {
         return;
     }

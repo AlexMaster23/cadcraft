@@ -9,7 +9,7 @@
 //! `CADCRAFT_PLOTSTYLES`, `CADCRAFT_HANDSEED` and `CADCRAFT_MLEADERSTYLE` (XRECORDs). Other
 //! readers keep or ignore them.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use cadcraft_color::Color;
 use cadcraft_doc::{ArrayParams, AssocSnap, Constraint, DimAssoc, DimStyle, Handle, LayerState, Parametric, PlotStyleTable};
@@ -20,6 +20,8 @@ use serde_json::Value;
 
 /// Registered application name of CADCraft's extended data.
 pub(crate) const APP: &str = "CADCRAFT";
+/// Registered application used only for namespaced extension entity metadata.
+pub(crate) const EXTENSION_DATA_APP: &str = "CADCRAFT_EXTENSIONS";
 /// Named-object-dictionary key of the constraint XRECORD.
 pub(crate) const CONSTRAINTS_KEY: &str = "CADCRAFT_CONSTRAINTS";
 /// Named-object-dictionary key of the saved layer states XRECORD.
@@ -35,6 +37,8 @@ pub(crate) const PLOT_STYLE_NAMES_KEY: &str = "ACAD_PLOTSTYLENAME";
 pub(crate) const HANDSEED_KEY: &str = "CADCRAFT_HANDSEED";
 /// Named-object-dictionary key of the XRECORD holding the current multileader style.
 pub(crate) const MLEADER_STYLE_KEY: &str = "CADCRAFT_MLEADERSTYLE";
+/// Named-object-dictionary key of drawing-level extension metadata.
+pub(crate) const EXTENSION_DATA_KEY: &str = "CADCRAFT_EXTENSIONS";
 /// Most plot style tables and plot style names read from a file.
 pub(crate) const MAX_PLOT_STYLE_TABLES: usize = 1000;
 pub(crate) const MAX_PLOT_STYLE_NAMES: usize = 100_000;
@@ -44,6 +48,12 @@ pub(crate) const MAX_XDATA_ITEMS: usize = 4096;
 pub(crate) const MAX_PAYLOAD: usize = 64 << 20;
 pub(crate) const MAX_CONSTRAINTS: usize = 1_000_000;
 pub(crate) const MAX_LAYER_STATES: usize = 100_000;
+const MAX_EXTENSIONS: usize = 128;
+const MAX_EXTENSION_KEYS: usize = 4_096;
+const MAX_EXTENSION_NAME_BYTES: usize = 128;
+const MAX_EXTENSION_KEY_BYTES: usize = 128;
+const MAX_EXTENSION_VALUE_BYTES: usize = 1024 * 1024;
+const MAX_ENTITY_EXTENSION_BYTES: usize = 12 * 1024;
 
 /// How a dimension variable is stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -659,6 +669,75 @@ fn json_chunks(json: &str) -> Vec<String> {
     }
     let chars: Vec<char> = safe.chars().collect();
     chars.chunks(250).map(|c| c.iter().collect()).collect()
+}
+
+#[derive(Serialize, Deserialize)]
+struct ExtensionDataPayload {
+    version: u32,
+    #[serde(default)]
+    data: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+fn valid_extension_data(data: &BTreeMap<String, BTreeMap<String, String>>, maximum_bytes: usize) -> bool {
+    if data.len() > MAX_EXTENSIONS {
+        return false;
+    }
+    let mut keys = 0usize;
+    let mut bytes = 0usize;
+    for (extension, values) in data {
+        if extension.is_empty() || extension.len() > MAX_EXTENSION_NAME_BYTES || extension.chars().any(char::is_control) {
+            return false;
+        }
+        keys = keys.saturating_add(values.len());
+        if keys > MAX_EXTENSION_KEYS {
+            return false;
+        }
+        for (key, value) in values {
+            if key.is_empty() || key.len() > MAX_EXTENSION_KEY_BYTES || key.chars().any(char::is_control) || value.len() > MAX_EXTENSION_VALUE_BYTES {
+                return false;
+            }
+            bytes = bytes.saturating_add(extension.len()).saturating_add(key.len()).saturating_add(value.len());
+            if bytes > maximum_bytes {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// JSON chunks for all drawing-level extension metadata.
+pub(crate) fn extension_data_chunks(data: &BTreeMap<String, BTreeMap<String, String>>) -> Option<Vec<String>> {
+    if data.is_empty() || !valid_extension_data(data, MAX_PAYLOAD) {
+        return None;
+    }
+    let json = serde_json::to_string(&ExtensionDataPayload { version: 1, data: data.clone() }).ok()?;
+    Some(json_chunks(&json))
+}
+
+/// Parse bounded drawing- or entity-level extension metadata.
+pub(crate) fn parse_extension_data(text: &str, maximum_bytes: usize) -> Option<BTreeMap<String, BTreeMap<String, String>>> {
+    if text.len() > maximum_bytes {
+        return None;
+    }
+    let payload: ExtensionDataPayload = serde_json::from_str(text).ok()?;
+    (payload.version == 1 && valid_extension_data(&payload.data, maximum_bytes)).then_some(payload.data)
+}
+
+/// Entity metadata as one private registered-application xdata run.
+pub(crate) fn extension_entity_xdata(data: &BTreeMap<String, BTreeMap<String, String>>) -> Vec<Tag> {
+    if data.is_empty() || !valid_extension_data(data, MAX_ENTITY_EXTENSION_BYTES) {
+        return Vec::new();
+    }
+    let Ok(json) = serde_json::to_string(&ExtensionDataPayload { version: 1, data: data.clone() }) else { return Vec::new() };
+    let mut tags = vec![Tag::s(1001, EXTENSION_DATA_APP)];
+    tags.extend(json_chunks(&json).into_iter().map(|chunk| Tag::s(1000, chunk)));
+    tags
+}
+
+/// Bounded extension metadata stored on one entity, or an empty map for absent/damaged data.
+pub(crate) fn read_extension_entity_data(tags: &[Tag]) -> BTreeMap<String, BTreeMap<String, String>> {
+    let text = xdata(tags, EXTENSION_DATA_APP).iter().filter(|tag| tag.code == 1000).map(Tag::str).collect::<String>();
+    parse_extension_data(&text, MAX_ENTITY_EXTENSION_BYTES).unwrap_or_default()
 }
 
 /// An associative array's parameters as CADCraft xdata on its block record: `1000 ARRAY`,

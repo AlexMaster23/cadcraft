@@ -2053,6 +2053,12 @@ impl Objects {
         if let Some(tables) = self.xrecord_text(crate::dxf_ext::PLOT_STYLES_KEY).and_then(|t| crate::dxf_ext::parse_plot_styles(&t)) {
             d.plot_style_tables = tables;
         }
+        if let Some(data) = self
+            .xrecord_text(crate::dxf_ext::EXTENSION_DATA_KEY)
+            .and_then(|text| crate::dxf_ext::parse_extension_data(&text, crate::dxf_ext::MAX_PAYLOAD))
+        {
+            d.extension_data = data;
+        }
         // Multileader styles (named by their ACAD_MLEADERSTYLE dictionary entries).
         for (h, tags) in &self.mleader_styles {
             let Some(name) = self.names.get(h).filter(|n| !n.is_empty()) else { continue };

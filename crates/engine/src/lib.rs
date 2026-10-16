@@ -883,7 +883,7 @@ impl Session {
                     extensions::ExtensionProgram::WasmComponent(bytes) => {
                         #[cfg(not(target_arch = "wasm32"))]
                         {
-                            self.wasm_execute_extension(&bytes, &function, params, &permissions)
+                            self.wasm_execute_extension(&extension_id, &bytes, &function, params, &permissions)
                         }
                         #[cfg(target_arch = "wasm32")]
                         {

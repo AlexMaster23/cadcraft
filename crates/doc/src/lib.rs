@@ -85,6 +85,9 @@ impl Space {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Drawing {
     pub header: Header,
+    /// Bounded, namespaced data owned by installed extensions. The extension host is the only
+    /// writer; file formats persist it without exposing another extension's values.
+    pub extension_data: BTreeMap<String, BTreeMap<String, String>>,
     /// File data CADCraft does not model, written back on save.
     pub foreign: std::sync::Arc<foreign::Foreign>,
     pub layers: Vec<Layer>,
@@ -154,6 +157,7 @@ impl Drawing {
     fn bare() -> Self {
         Drawing {
             header: Header::default(),
+            extension_data: BTreeMap::new(),
             foreign: std::sync::Arc::default(),
             layers: vec![Layer::default(), Layer { name: "Defpoints".into(), plot: false, ..Layer::default() }],
             linetypes: vec![

@@ -25,10 +25,25 @@ interface geometry {
     rotation-degrees: f64,
     layer: string,
   }
+
+  enum entity-kind {
+    line,
+    point,
+    text,
+    other,
+  }
+
+  record entity-view {
+    id: u64,
+    kind: entity-kind,
+    layer: string,
+    position: option<point3>,
+    value: option<string>,
+  }
 }
 
 interface drawing {
-  use geometry.{line-request, point-request, text-request};
+  use geometry.{entity-view, line-request, point-request, text-request};
 
   type transaction-id = u64;
   type entity-id = u64;
@@ -43,6 +58,17 @@ interface drawing {
   create-line: func(transaction: transaction-id, request: line-request) -> result<entity-id, host-error>;
   create-point: func(transaction: transaction-id, request: point-request) -> result<entity-id, host-error>;
   create-text: func(transaction: transaction-id, request: text-request) -> result<entity-id, host-error>;
+  get-drawing-metadata: func(key: string) -> result<option<string>, host-error>;
+  set-drawing-metadata: func(transaction: transaction-id, key: string, value: string) -> result<_, host-error>;
+  remove-drawing-metadata: func(transaction: transaction-id, key: string) -> result<_, host-error>;
+  get-entity: func(entity: entity-id) -> result<option<entity-view>, host-error>;
+  get-entity-metadata: func(entity: entity-id, key: string) -> result<option<string>, host-error>;
+  find-entities-by-metadata: func(key: string, value: string) -> result<list<entity-view>, host-error>;
+  set-entity-metadata: func(transaction: transaction-id, entity: entity-id, key: string, value: string) -> result<_, host-error>;
+  remove-entity-metadata: func(transaction: transaction-id, entity: entity-id, key: string) -> result<_, host-error>;
+  update-point: func(transaction: transaction-id, entity: entity-id, request: point-request) -> result<_, host-error>;
+  update-text: func(transaction: transaction-id, entity: entity-id, request: text-request) -> result<_, host-error>;
+  delete-entity: func(transaction: transaction-id, entity: entity-id) -> result<_, host-error>;
   commit-transaction: func(transaction: transaction-id) -> result<_, host-error>;
   rollback-transaction: func(transaction: transaction-id) -> result<_, host-error>;
 }

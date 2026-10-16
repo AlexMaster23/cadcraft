@@ -121,15 +121,30 @@ explicit drawing capabilities:
 ```
 
 CADCraft calls the component world's `run-command(command, parameters-json)` export. `command` is
-the manifest command's `function`; input and output are bounded JSON strings. The initial
-[WIT contract](../crates/engine/wit/cadcraft-extension.wit) exposes guarded transactions and native
-line, point and text creation. New drawing capabilities will be added deliberately and versioned.
+the manifest command's `function`; input and output are bounded JSON strings. The
+[WIT contract](../crates/engine/wit/cadcraft-extension.wit) exposes guarded transactions, native
+line/point/text creation, bounded namespaced metadata, entity queries and guarded point/text
+updates and deletion. New drawing capabilities are added deliberately and versioned.
 
 The native runtime limits every invocation to 10 million WebAssembly fuel units, 64 MiB memory,
 10,000 drawing operations, and 1 MiB input/output JSON. A command may open one transaction. Host
 operations remain staged until the guest returns successfully after commit; a trap, fuel
 exhaustion, error, missing commit or invalid output leaves the drawing unchanged. A successful
 transaction becomes one normal CADCraft undo step.
+
+### Persistent extension data
+
+Schema 2 extensions with `drawing-read` can read their own drawing/entity metadata and query
+entities by one metadata key/value. With `drawing-write`, the same transaction used for geometry
+can set or remove metadata, update point/text entities and delete entities. CADCraft scopes every
+metadata call to the current extension ID: a guest never supplies a namespace and cannot read or
+overwrite another extension's values.
+
+Drawing metadata is stored in a bounded `CADCRAFT_EXTENSIONS` XRECORD. Entity metadata is stored in
+bounded `CADCRAFT_EXTENSIONS` xdata and follows the entity through normal save/reopen and copy
+behavior. Metadata mutations remain staged with geometry until commit, and roll back together on
+failure. Entity IDs returned by create calls are reserved drawing handles, so a guest can persist
+exact links in drawing metadata during the same transaction.
 
 Command IDs and aliases cannot shadow CADCraft commands, built-in aliases or another enabled
 extension. Disabling or uninstalling an extension removes its declared commands from every command
