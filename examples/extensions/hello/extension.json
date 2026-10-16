@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "org.cadcraft.hello",
+  "name": "Hello CADCraft",
+  "version": "1.0.0",
+  "cadcraft": ">=0.7.0, <1.0.0",
+  "description": "A minimal open-source CADCraft extension.",
+  "license": "MIT OR Apache-2.0",
+  "entrypoint": "main.lsp",
+  "commands": [
+    {
+      "id": "hello",
+      "label": "Hello from Extension",
+      "menu": ["Extensions", "Hello from Extension"],
+      "aliases": ["HI"],
+      "params": "{name?: string} -> greeting",
+      "function": "HELLO:RUN",
+      "interactive": true
+    }
+  ]
+}

@@ -57,6 +57,28 @@ use serde_json::{Value, json};
 
 pub use control::{ControlRequest, ControlResponse, PendingReply};
 
+/// User-visible metadata for one installed extension. The desktop host owns its files; the
+/// portable UI only displays and changes this state through [`Services`].
+#[derive(Clone, Debug)]
+pub struct InstalledExtension {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub license: String,
+    pub permissions: Vec<String>,
+    pub commands: usize,
+    pub enabled: bool,
+    pub compatible: bool,
+}
+
+/// A host snapshot contains display metadata and the validated sources the engine may execute.
+#[derive(Clone, Debug, Default)]
+pub struct ExtensionSnapshot {
+    pub installed: Vec<InstalledExtension>,
+    pub runtime: Vec<cadcraft_engine::Extension>,
+}
+
 /// The host storage key for [`CadApp::prefs_json`].
 pub const PREFS_KEY: &str = "cadcraft.prefs";
 
@@ -188,6 +210,11 @@ impl Default for UiState {
 pub struct Services {
     pub pick_open: Option<Box<dyn Fn() -> Option<String>>>,
     pub pick_save: Option<Box<dyn Fn(&str) -> Option<String>>>,
+    pub pick_extension: Option<Box<dyn Fn() -> Option<String>>>,
+    pub extension_snapshot: Option<Box<dyn Fn() -> Result<ExtensionSnapshot, String>>>,
+    pub install_extension: Option<Box<dyn Fn(&str) -> Result<ExtensionSnapshot, String>>>,
+    pub enable_extension: Option<Box<dyn Fn(&str, bool) -> Result<ExtensionSnapshot, String>>>,
+    pub uninstall_extension: Option<Box<dyn Fn(&str) -> Result<ExtensionSnapshot, String>>>,
 }
 
 pub struct CadApp {
@@ -282,6 +309,14 @@ impl CadApp {
             hatch_dlg: None,
             bedit: bedit::State::default(),
         }
+    }
+
+    /// Reload the host's installed extensions into the engine. A broken store never crashes the
+    /// app or discards the currently working catalog.
+    pub fn reload_extensions(&mut self) -> Result<Vec<InstalledExtension>, String> {
+        let snapshot = self.services.extension_snapshot.as_ref().ok_or("extension management is unavailable on this platform")?()?;
+        self.session.set_extensions(snapshot.runtime).map_err(|error| error.to_string())?;
+        Ok(snapshot.installed)
     }
 
     /// The interface language shown: the chosen one, or English when this computer has no font

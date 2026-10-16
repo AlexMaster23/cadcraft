@@ -5,6 +5,7 @@
 //! cadcraft-cli convert IN.dxf OUT.(dxf|svg|png) [--window x0,y0,x1,y1 | --view extents|current]
 //! cadcraft-cli run [FILE|--sample|--metric] [--script TEXT|--script-file F.scr] [--cmd 'id {json}']... [--save OUT] [--export OUT.png] [--window ... | --view ...]
 //! cadcraft-cli commands [FILTER]                   command catalog (JSON)
+//! cadcraft-cli extensions (list|install|enable|disable|uninstall|pack)
 //! cadcraft-cli mcp [--connect HOST:PORT [--lazy] [--launch]]  MCP server on stdio (headless or bridged to the app)
 //! cadcraft-cli perf [N]                            timing table on a synthetic N-entity drawing
 //! cadcraft-cli perf FILE                           canvas display-list build of a drawing, zoomed in step by step
@@ -60,6 +61,10 @@ const USAGE: &str = "usage:
   cadcraft-cli convert IN.dxf OUT.(dxf|dwg|svg|png|pdf) [FRAMING]
   cadcraft-cli run [FILE | --sample | --metric] [--script TEXT] [--script-file F.scr] [--cmd 'id {json}']... [--save OUT.dxf] [--export OUT.(png|svg|pdf)] [FRAMING]
   cadcraft-cli commands [FILTER]
+  cadcraft-cli extensions list
+  cadcraft-cli extensions install FILE.cadcraft-extension
+  cadcraft-cli extensions (enable|disable|uninstall) EXTENSION_ID
+  cadcraft-cli extensions pack SOURCE_DIR OUT.cadcraft-extension
   cadcraft-cli mcp [--connect HOST:PORT [--lazy] [--launch]]
   cadcraft-cli perf [N | FILE]
   cadcraft-cli sample (bracket|floorplan) OUT.(dxf|dwg|svg|png)
@@ -179,6 +184,94 @@ fn install_io() {
     });
 }
 
+fn config_dir() -> Option<std::path::PathBuf> {
+    let set = |key: &str| std::env::var_os(key).filter(|value| !value.is_empty()).map(std::path::PathBuf::from);
+    if let Some(dir) = set("CADCRAFT_CONFIG_DIR") {
+        return Some(dir);
+    }
+    if cfg!(target_os = "macos") {
+        set("HOME").map(|home| home.join("Library/Application Support/CADCraft"))
+    } else if cfg!(windows) {
+        set("APPDATA").map(|appdata| appdata.join("CADCraft"))
+    } else {
+        set("XDG_CONFIG_HOME")
+            .filter(|path| path.is_absolute())
+            .or_else(|| set("HOME").map(|home| home.join(".config")))
+            .map(|config| config.join("cadcraft"))
+    }
+}
+
+fn extension_store() -> Result<(cadcraft_extensions::Store, semver::Version), String> {
+    let root = config_dir().ok_or("no settings directory (set CADCRAFT_CONFIG_DIR)")?.join("extensions");
+    let version = semver::Version::parse(env!("CARGO_PKG_VERSION")).map_err(|error| error.to_string())?;
+    Ok((cadcraft_extensions::Store::new(root), version))
+}
+
+fn load_extensions(session: &mut Session) -> Result<(), String> {
+    let Some(root) = config_dir() else { return Ok(()) };
+    let version = semver::Version::parse(env!("CARGO_PKG_VERSION")).map_err(|error| error.to_string())?;
+    let installed = cadcraft_extensions::Store::new(root.join("extensions")).list(&version).map_err(|error| error.to_string())?;
+    session
+        .set_extensions(
+            installed
+                .into_iter()
+                .map(|extension| cadcraft_engine::Extension::new(extension.manifest, extension.entrypoint, extension.enabled && extension.compatible))
+                .collect(),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn extensions(args: &[String]) -> Result<(), String> {
+    let Some(operation) = args.first().map(String::as_str) else { return Err(USAGE.into()) };
+    if operation == "pack" {
+        let [_, source, output] = args else { return Err("extensions pack needs SOURCE_DIR OUT.cadcraft-extension".into()) };
+        let bytes = cadcraft_extensions::Package::pack_directory(std::path::Path::new(source)).map_err(|error| error.to_string())?;
+        std::fs::write(output, &bytes).map_err(|error| format!("{output}: {error}"))?;
+        eprintln!("wrote {output} ({} bytes)", bytes.len());
+        return Ok(());
+    }
+    let (store, version) = extension_store()?;
+    match operation {
+        "list" if args.len() == 1 => {
+            let value: Vec<Value> = store
+                .list(&version)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|extension| {
+                    json!({
+                        "id": extension.manifest.id,
+                        "name": extension.manifest.name,
+                        "version": extension.manifest.version,
+                        "description": extension.manifest.description,
+                        "license": extension.manifest.license,
+                        "permissions": extension.manifest.permissions,
+                        "commands": extension.manifest.commands.len(),
+                        "enabled": extension.enabled,
+                        "compatible": extension.compatible,
+                        "directory": extension.directory,
+                    })
+                })
+                .collect();
+            outln!("{}", serde_json::to_string_pretty(&value).unwrap_or_default());
+        }
+        "install" if args.len() == 2 => {
+            let extension = store.install_file(std::path::Path::new(&args[1]), &version).map_err(|error| error.to_string())?;
+            outln!("installed {} {}", extension.manifest.name, extension.manifest.version);
+        }
+        "enable" | "disable" if args.len() == 2 => {
+            let enabled = operation == "enable";
+            store.set_enabled(&args[1], enabled).map_err(|error| error.to_string())?;
+            outln!("{} {}", if enabled { "enabled" } else { "disabled" }, args[1]);
+        }
+        "uninstall" if args.len() == 2 => {
+            store.uninstall(&args[1]).map_err(|error| error.to_string())?;
+            outln!("uninstalled {}", args[1]);
+        }
+        _ => return Err(USAGE.into()),
+    }
+    Ok(())
+}
+
 fn open(s: &mut Session, path: &str) -> Result<(), String> {
     s.execute("open", &json!({ "path": path })).map(|_| ()).map_err(|e| e.to_string())
 }
@@ -292,6 +385,7 @@ fn skipped_message(d: &cadcraft_engine::doc::Drawing, path: &str) -> Option<Stri
 
 fn run(args: &[String]) -> Result<(), String> {
     let mut s = Session::empty();
+    load_extensions(&mut s)?;
     let mut it = args.iter();
     let mut save = None;
     let mut exp: Option<String> = None;
@@ -587,7 +681,11 @@ fn mcp(args: &[String]) -> Result<(), String> {
             Ok(r) => Box::new(r),
             Err(e) => return Err(format!("cadcraft-cli: cannot connect to {addr}: {e}")),
         },
-        McpTarget::Headless => Box::new(cadcraft_mcp::Headless::default()),
+        McpTarget::Headless => {
+            let mut session = Session::new();
+            load_extensions(&mut session)?;
+            Box::new(cadcraft_mcp::Headless { session })
+        }
     };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -651,16 +749,20 @@ fn cli() -> ExitCode {
         Some("run") => run(&rest),
         Some("perf") => validate_options("perf", &rest, NO_OPTIONS).and_then(|_| perf(&rest)),
         Some("sample") => validate_options("sample", &rest, NO_OPTIONS).and_then(|_| sample(&rest)),
-        Some("commands") => validate_options("commands", &rest, NO_OPTIONS).map(|_| {
-            let s = Session::new();
+        Some("commands") => validate_options("commands", &rest, NO_OPTIONS).and_then(|_| {
+            let mut s = Session::new();
+            load_extensions(&mut s)?;
             let f = rest.first().map(|x| x.to_ascii_lowercase());
-            let v: Vec<Value> = cadcraft_engine::command_specs()
-                .iter()
+            let v: Vec<Value> = s
+                .command_infos()
+                .into_iter()
                 .filter(|c| f.as_ref().is_none_or(|f| c.id.contains(f.as_str()) || c.label.to_ascii_lowercase().contains(f.as_str())))
-                .map(|c| serde_json::to_value(c.info(&s)).unwrap_or_default())
+                .map(|c| serde_json::to_value(c).unwrap_or_default())
                 .collect();
             outln!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+            Ok(())
         }),
+        Some("extensions") => extensions(&rest),
         Some("mcp") => mcp(&rest),
         Some("--version" | "-V") => {
             outln!("cadcraft-cli {}", env!("CARGO_PKG_VERSION"));

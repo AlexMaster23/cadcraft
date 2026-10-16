@@ -16,6 +16,7 @@ const RECENT_CLEAR: &str = "ui.recent.clear";
 /// UI-only commands: (id, label, menu path, shortcut).
 pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.spacemouse", "3D Mouse...", &["Tools", "3D Mouse..."], None),
+    ("ui.dialog.extensions", "Extensions...", &["Tools", "Extensions..."], None),
     ("ui.spacemouse.calibrate", "Calibrate 3D Mouse", &[], None),
     ("ui.spacemouse.navigate", "3D Mouse Navigation", &[], None),
     ("ui.dock", "Arrange Panel", &[], None),
@@ -335,6 +336,7 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
             Ok(Value::Null)
         }
         "ui.dialog.language"
+        | "ui.dialog.extensions"
         | "ui.dialog.layers"
         | "ui.dialog.blocks"
         | "ui.dialog.dsettings"
@@ -467,6 +469,10 @@ pub fn tree(app: &CadApp) -> Vec<(String, Vec<Entry>)> {
     let mut out: Vec<(String, Vec<Entry>)> = MENUS.iter().map(|m| (m.to_string(), Vec::new())).collect();
     let mut add = |path: &[&str], label: &str, id: &str, shortcut: Option<&str>, enabled: bool| {
         let Some((top, rest)) = path.split_first() else { return };
+        if !out.iter().any(|(m, _)| m == top) {
+            let help = out.iter().position(|(m, _)| m == "Help").unwrap_or(out.len());
+            out.insert(help, ((*top).to_string(), Vec::new()));
+        }
         let Some((_, entries)) = out.iter_mut().find(|(m, _)| m == top) else { return };
         let mut cur = entries;
         let n = rest.len();
@@ -492,9 +498,10 @@ pub fn tree(app: &CadApp) -> Vec<(String, Vec<Entry>)> {
             }
         }
     };
-    for c in cadcraft_engine::command_specs() {
+    for c in app.session.command_infos() {
         if !c.menu.is_empty() {
-            add(c.menu, c.label, c.id, c.shortcut, (c.enabled)(&app.session).is_ok());
+            let path: Vec<&str> = c.menu.iter().map(String::as_str).collect();
+            add(&path, &c.label, &c.id, c.shortcut.as_deref(), c.enabled);
         }
     }
     for (id, label, menu, sc) in UI_COMMANDS {
@@ -692,6 +699,7 @@ mod tests {
                 log.borrow_mut().push(name.to_string());
                 answer.clone()
             })),
+            ..Services::default()
         };
         (CadApp::new(Session::new(), services), asked)
     }

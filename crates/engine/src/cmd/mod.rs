@@ -125,15 +125,16 @@ impl CommandSpec {
     pub fn info(&self, s: &Session) -> CommandInfo {
         let e = (self.enabled)(s);
         CommandInfo {
-            id: self.id,
-            label: self.label,
-            menu: self.menu.to_vec(),
-            shortcut: self.shortcut,
-            aliases: self.aliases.to_vec(),
-            params: self.params,
+            id: self.id.to_string(),
+            label: self.label.to_string(),
+            menu: self.menu.iter().map(|value| (*value).to_string()).collect(),
+            shortcut: self.shortcut.map(str::to_string),
+            aliases: self.aliases.iter().map(|value| (*value).to_string()).collect(),
+            params: self.params.to_string(),
             interactive: self.interactive.is_some(),
             enabled: e.is_ok(),
             disabled_reason: e.err(),
+            extension: None,
         }
     }
 }
@@ -141,16 +142,19 @@ impl CommandSpec {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandInfo {
-    pub id: &'static str,
-    pub label: &'static str,
-    pub menu: Vec<&'static str>,
-    pub shortcut: Option<&'static str>,
-    pub aliases: Vec<&'static str>,
-    pub params: &'static str,
+    pub id: String,
+    pub label: String,
+    pub menu: Vec<String>,
+    pub shortcut: Option<String>,
+    pub aliases: Vec<String>,
+    pub params: String,
     pub interactive: bool,
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
+    /// Reverse-DNS extension id; absent for commands built into CADCraft.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extension: Option<String>,
 }
 
 pub fn always(_: &Session) -> std::result::Result<(), String> {

@@ -24,6 +24,7 @@ cadcraft-io = { path = "crates/io" }
 cadcraft-engine = { path = "crates/engine" }
 cadcraft-ui-egui = { path = "crates/ui-egui" }
 cadcraft-mcp = { path = "crates/mcp" }
+cadcraft-extensions = { path = "crates/extensions" }
 
 # foundation
 thiserror = "2"
@@ -31,6 +32,8 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 log = "0.4"
 rayon = "1"
+semver = { version = "1", features = ["serde"] }
+zip = { version = "6", default-features = false, features = ["deflate"] }
 
 # rendering / formats
 tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd", "png-format"] }

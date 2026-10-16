@@ -25,6 +25,7 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
         "about" => about(ctx, &mut open),
         "preview" => crate::exchange::dialog(app, ctx, &mut open),
         "commands" => commands(app, ctx, &mut open),
+        "extensions" => extensions(app, ctx, &mut open),
         "blocks" => blocks(app, ctx, &mut open),
         "bedit" => crate::bedit::dialog(app, ctx, &mut open),
         "authoring" => crate::bedit::authoring_dialog(app, ctx, &mut open),
@@ -35,6 +36,101 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
     // A dialog that closed by opening another (Plot Preview back to Plot) keeps the new one.
     if !open && app.ui.dialog.as_deref() == Some(d.as_str()) {
         app.ui.dialog = None;
+    }
+}
+
+fn extensions(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
+    let snapshot = app.services.extension_snapshot.as_ref().map(|load| load());
+    let mut action: Option<Result<crate::ExtensionSnapshot, String>> = None;
+    egui::Window::new(crate::tl!("Extensions")).id(egui::Id::new("extensions")).open(open).default_size(vec2(620.0, 420.0)).show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            if ui.button(crate::tl!("Install...")).clicked()
+                && let Some(path) = app.services.pick_extension.as_ref().and_then(|pick| pick())
+            {
+                action = Some(
+                    app.services
+                        .install_extension
+                        .as_ref()
+                        .ok_or_else(|| "extension installation is unavailable".to_string())
+                        .and_then(|install| install(&path)),
+                );
+            }
+            if ui.button(crate::tl!("Reload")).clicked() {
+                action = Some(
+                    app.services.extension_snapshot.as_ref().ok_or_else(|| "extension management is unavailable".to_string()).and_then(|load| load()),
+                );
+            }
+        });
+        ui.separator();
+        match &snapshot {
+            None => {
+                ui.label(crate::tl!("Extension management is unavailable on this platform."));
+            }
+            Some(Err(error)) => {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            Some(Ok(snapshot)) if snapshot.installed.is_empty() => {
+                ui.label(crate::tl!("No extensions are installed."));
+            }
+            Some(Ok(snapshot)) => {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for extension in &snapshot.installed {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                let mut enabled = extension.enabled;
+                                let response = ui.add_enabled(extension.compatible, egui::Checkbox::new(&mut enabled, ""));
+                                ui.strong(format!("{}  {}", extension.name, extension.version));
+                                ui.weak(&extension.id);
+                                if !extension.compatible {
+                                    ui.colored_label(ui.visuals().error_fg_color, crate::tl!("Incompatible"));
+                                }
+                                if response.changed() {
+                                    action = Some(
+                                        app.services
+                                            .enable_extension
+                                            .as_ref()
+                                            .ok_or_else(|| "extension management is unavailable".to_string())
+                                            .and_then(|set| set(&extension.id, enabled)),
+                                    );
+                                }
+                                if ui.button(crate::tl!("Uninstall")).clicked() {
+                                    action = Some(
+                                        app.services
+                                            .uninstall_extension
+                                            .as_ref()
+                                            .ok_or_else(|| "extension management is unavailable".to_string())
+                                            .and_then(|remove| remove(&extension.id)),
+                                    );
+                                }
+                            });
+                            ui.label(&extension.description);
+                            let permissions = if extension.permissions.is_empty() {
+                                crate::tl!("Permissions: drawing only").to_string()
+                            } else {
+                                format!("{}: {}", crate::tl!("Permissions"), extension.permissions.join(", "))
+                            };
+                            ui.small(format!(
+                                "{} · {}: {} · {}: {}",
+                                permissions,
+                                crate::tl!("Commands"),
+                                extension.commands,
+                                crate::tl!("License"),
+                                extension.license
+                            ));
+                        });
+                    }
+                });
+            }
+        }
+    });
+    if let Some(result) = action {
+        match result.and_then(|snapshot| {
+            app.session.set_extensions(snapshot.runtime).map_err(|error| error.to_string())?;
+            Ok(snapshot.installed)
+        }) {
+            Ok(_) => app.set_status("Extensions updated"),
+            Err(error) => app.set_status(&error),
+        }
     }
 }
 
@@ -349,18 +445,18 @@ fn commands(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
             let f = filter.to_lowercase();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 egui::Grid::new("cmdref").striped(true).num_columns(3).show(ui, |ui| {
-                    for c in cadcraft_engine::command_specs() {
+                    for c in app.session.command_infos() {
                         if !f.is_empty()
                             && !c.id.contains(&f)
                             && !c.label.to_ascii_lowercase().contains(&f)
-                            && !crate::i18n::t(c.label).to_lowercase().contains(&f)
+                            && !crate::i18n::t(&c.label).to_lowercase().contains(&f)
                         {
                             continue;
                         }
                         if ui.link(c.id.to_ascii_uppercase()).clicked() {
-                            start = Some(c.id);
+                            start = Some(c.id.clone());
                         }
-                        ui.label(crate::i18n::t(c.label));
+                        ui.label(crate::i18n::t(&c.label));
                         ui.label(RichText::new(if c.aliases.is_empty() { String::new() } else { c.aliases.join(", ").to_ascii_uppercase() }).small());
                         ui.end_row();
                     }
@@ -370,7 +466,7 @@ fn commands(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
     );
     if let Some(c) = start {
         app.ui.dialog = None;
-        app.start(c);
+        app.start(&c);
     }
 }
 

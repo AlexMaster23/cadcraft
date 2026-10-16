@@ -1330,3 +1330,15 @@
 	Justify	За шириною
 	Text color	Колір тексту
 	Click the ruler to add a tab stop, right-click to remove one	Натисніть на лінійку, щоб додати табуляцію; права кнопка видаляє її
+# Extensions.
+	Extensions...	Розширення...
+	Extensions	Розширення
+	Install...	Установити...
+	Extension management is unavailable on this platform.	Керування розширеннями недоступне на цій платформі.
+	No extensions are installed.	Розширення не встановлено.
+	Incompatible	Несумісне
+	Uninstall	Видалити
+	Permissions: drawing only	Дозволи: лише креслення
+	Permissions	Дозволи
+	Commands	Команди
+	License	Ліцензія

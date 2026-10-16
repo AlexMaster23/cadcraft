@@ -118,7 +118,7 @@ impl NativeMenu {
         }
         self.last_refresh = now;
         for (cmd, _, item) in self.items.values() {
-            let en = cadcraft_engine::find_command(cmd).is_none_or(|c| (c.enabled)(&app.session).is_ok());
+            let en = app.session.command_info(cmd).is_none_or(|c| c.enabled);
             item.set_enabled(en);
         }
     }
