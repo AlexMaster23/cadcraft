@@ -135,6 +135,7 @@ Ranked; detail and the full beta checklist in [docs/roadmap.md](docs/roadmap.md)
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | Extended schema 2 with bounded entity colors/lineweights and native polygonal solid fills |
 | 2026-10-16 | minor | Added native schema 2 WASM extension execution with capability and transaction limits |
 | 2026-10-16 | minor | Portable schema-1 extension system landed; ecosystem/automation 10% → 15% and remaining work narrowed |
 | 2026-10-12 | trivial | Progress log: closed-polyline TRIM (#726) |

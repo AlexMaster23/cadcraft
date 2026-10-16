@@ -103,6 +103,7 @@ AutoLISP surface, AI features with openly licensed local models, and every remai
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | M12 schema 2 now supports bounded entity colors/lineweights and native polygonal solid fills |
 | 2026-10-16 | minor | M12 now includes host-rendered virtualized extension data managers, drawing selection/location and host-owned text export |
 | 2026-10-16 | minor | M12 extension managers now support host-owned add/preview workflows and schema 2 can create native arcs and circles |
 | 2026-10-16 | minor | M12 now includes host-rendered extension command groups in the native Tool Sets palette |

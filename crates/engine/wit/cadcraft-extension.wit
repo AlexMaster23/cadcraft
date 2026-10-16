@@ -27,6 +27,17 @@ interface geometry {
     layer: string,
   }
 
+  record entity-appearance {
+    color: option<string>,
+    lineweight-mm: option<f64>,
+  }
+
+  record solid-fill-request {
+    boundary: list<point3>,
+    layer: string,
+    color: option<string>,
+  }
+
   record point-request {
     position: point3,
     layer: string,
@@ -59,7 +70,7 @@ interface geometry {
 }
 
 interface drawing {
-  use geometry.{arc-request, circle-request, entity-view, line-request, point-request, text-request};
+  use geometry.{arc-request, circle-request, entity-appearance, entity-view, line-request, point-request, solid-fill-request, text-request};
 
   type transaction-id = u64;
   type entity-id = u64;
@@ -74,6 +85,8 @@ interface drawing {
   create-line: func(transaction: transaction-id, request: line-request) -> result<entity-id, host-error>;
   create-arc: func(transaction: transaction-id, request: arc-request) -> result<entity-id, host-error>;
   create-circle: func(transaction: transaction-id, request: circle-request) -> result<entity-id, host-error>;
+  create-solid-fill: func(transaction: transaction-id, request: solid-fill-request) -> result<entity-id, host-error>;
+  set-entity-appearance: func(transaction: transaction-id, entity: entity-id, appearance: entity-appearance) -> result<_, host-error>;
   create-point: func(transaction: transaction-id, request: point-request) -> result<entity-id, host-error>;
   create-text: func(transaction: transaction-id, request: text-request) -> result<entity-id, host-error>;
   get-drawing-metadata: func(key: string) -> result<option<string>, host-error>;

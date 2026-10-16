@@ -7,9 +7,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use cadcraft_doc::{Arc as DrawingArc, Circle, Drawing, Entity, EntityKind, HAlign, Handle, Line, Point, Text, VAlign};
+use cadcraft_color::Color;
+use cadcraft_doc::{Arc as DrawingArc, Circle, Drawing, Entity, EntityKind, HAlign, Handle, Hatch, HatchLoop, Line, Lineweight, Point, Text, VAlign};
 use cadcraft_extensions::Permission;
-use cadcraft_geom::Vec3;
+use cadcraft_geom::{PolyVertex, Vec3};
 use serde_json::Value;
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
@@ -33,6 +34,7 @@ const MAX_METADATA_KEY_BYTES: usize = 128;
 const MAX_ENTITY_METADATA_VALUE_BYTES: usize = 4 * 1024;
 const MAX_DRAWING_METADATA_VALUE_BYTES: usize = MAX_JSON_BYTES;
 const MAX_QUERY_RESULTS: usize = 10_000;
+const MAX_FILL_BOUNDARY_POINTS: usize = 1_024;
 
 #[derive(Clone, Debug)]
 struct PendingLine {
@@ -58,6 +60,18 @@ struct PendingCircle {
 }
 
 #[derive(Clone, Debug)]
+struct PendingSolidFill {
+    boundary: Vec<Vec3>,
+    layer: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PendingAppearance {
+    color: Color,
+    lineweight: Lineweight,
+}
+
+#[derive(Clone, Debug)]
 struct PendingPoint {
     position: Vec3,
     layer: String,
@@ -77,15 +91,17 @@ enum PendingEntity {
     Line(PendingLine),
     Arc(PendingArc),
     Circle(PendingCircle),
+    SolidFill(PendingSolidFill),
     Point(PendingPoint),
     Text(PendingText),
 }
 
 #[derive(Clone, Debug)]
 enum PendingOperation {
-    Create { id: u64, entity: PendingEntity, metadata: BTreeMap<String, String> },
+    Create { id: u64, entity: PendingEntity, metadata: BTreeMap<String, String>, appearance: PendingAppearance },
     SetDrawingMetadata { key: String, value: Option<String> },
     SetEntityMetadata { id: u64, key: String, value: Option<String> },
+    SetEntityAppearance { id: u64, appearance: PendingAppearance },
     UpdatePoint { id: u64, point: PendingPoint },
     UpdateText { id: u64, text: PendingText },
     DeleteEntity { id: u64 },
@@ -158,8 +174,28 @@ impl HostState {
             return Err(cadcraft::extension::drawing::HostError::DrawingFailure("drawing has no free entity handles".into()));
         }
         self.next_entity_id = self.next_entity_id.saturating_add(1);
-        self.push_operation(transaction, PendingOperation::Create { id: entity_id, entity, metadata: BTreeMap::new() })?;
+        self.push_operation(
+            transaction,
+            PendingOperation::Create { id: entity_id, entity, metadata: BTreeMap::new(), appearance: PendingAppearance::default() },
+        )?;
         Ok(entity_id)
+    }
+
+    fn set_appearance(
+        &mut self,
+        transaction: u64,
+        entity: u64,
+        appearance: PendingAppearance,
+    ) -> std::result::Result<(), cadcraft::extension::drawing::HostError> {
+        if let Some(PendingOperation::Create { appearance: pending, .. }) =
+            self.transaction.as_mut().filter(|active| active.id == transaction).and_then(|active| {
+                active.operations.iter_mut().find(|operation| matches!(operation, PendingOperation::Create { id, .. } if *id == entity))
+            })
+        {
+            *pending = appearance;
+            return Ok(());
+        }
+        self.push_operation(transaction, PendingOperation::SetEntityAppearance { id: entity, appearance })
     }
 
     fn entity_exists(&self, id: u64) -> bool {
@@ -194,6 +230,65 @@ fn radius(value: f64) -> std::result::Result<f64, cadcraft::extension::drawing::
     } else {
         Err(cadcraft::extension::drawing::HostError::InvalidInput("radius must be finite, positive and within the supported drawing range".into()))
     }
+}
+
+fn appearance(
+    value: &cadcraft::extension::geometry::EntityAppearance,
+) -> std::result::Result<PendingAppearance, cadcraft::extension::drawing::HostError> {
+    let color = match value.color.as_deref() {
+        Some(value) => Color::parse(value).ok_or_else(|| {
+            cadcraft::extension::drawing::HostError::InvalidInput("appearance color must be a valid CAD color or #RRGGBB value".into())
+        })?,
+        None => Color::ByLayer,
+    };
+    let lineweight = match value.lineweight_mm {
+        Some(value) if value.is_finite() && (0.0..=2.11).contains(&value) => Lineweight::Mm100((value * 100.0).round() as u16),
+        Some(_) => {
+            return Err(cadcraft::extension::drawing::HostError::InvalidInput("appearance lineweight must be between 0 and 2.11 millimetres".into()));
+        }
+        None => Lineweight::ByLayer,
+    };
+    Ok(PendingAppearance { color, lineweight })
+}
+
+fn solid_fill_boundary(points: &[cadcraft::extension::geometry::Point3]) -> std::result::Result<Vec<Vec3>, cadcraft::extension::drawing::HostError> {
+    if !(3..=MAX_FILL_BOUNDARY_POINTS).contains(&points.len()) {
+        return Err(cadcraft::extension::drawing::HostError::InvalidInput(format!(
+            "solid fill boundary must contain 3 to {MAX_FILL_BOUNDARY_POINTS} points"
+        )));
+    }
+    let mut boundary = points.iter().map(point3).collect::<std::result::Result<Vec<_>, _>>()?;
+    if boundary.len() > 3
+        && boundary
+            .first()
+            .zip(boundary.last())
+            .is_some_and(|(first, last)| (first.x - last.x).hypot(first.y - last.y) <= f64::EPSILON && (first.z - last.z).abs() <= f64::EPSILON)
+    {
+        boundary.pop();
+    }
+    if boundary.len() < 3 {
+        return Err(cadcraft::extension::drawing::HostError::InvalidInput("solid fill boundary must contain three distinct points".into()));
+    }
+    let Some(origin) = boundary.first().copied() else {
+        return Err(cadcraft::extension::drawing::HostError::InvalidInput("solid fill boundary is empty".into()));
+    };
+    let z_tolerance = 1.0e-9 * origin.z.abs().max(1.0);
+    if boundary.iter().any(|point| (point.z - origin.z).abs() > z_tolerance) {
+        return Err(cadcraft::extension::drawing::HostError::InvalidInput("solid fill boundary points must be coplanar".into()));
+    }
+    let mut twice_area = 0.0;
+    let mut scale = 0.0_f64;
+    for (current, next) in boundary.iter().zip(boundary.iter().cycle().skip(1)).take(boundary.len()) {
+        let current = *current - origin;
+        let next = *next - origin;
+        twice_area += current.x.mul_add(next.y, -(current.y * next.x));
+        scale = scale.max(current.x.hypot(current.y));
+    }
+    let threshold = 32.0 * f64::EPSILON * scale * scale * boundary.len() as f64;
+    if !twice_area.is_finite() || scale <= 0.0 || twice_area.abs() <= threshold {
+        return Err(cadcraft::extension::drawing::HostError::InvalidInput("solid fill boundary is degenerate".into()));
+    }
+    Ok(boundary)
 }
 
 fn angle_degrees(value: f64) -> std::result::Result<f64, cadcraft::extension::drawing::HostError> {
@@ -289,6 +384,33 @@ impl cadcraft::extension::drawing::Host for HostState {
         self.require_write()?;
         let pending = PendingCircle { center: point3(&request.center)?, radius: radius(request.radius)?, layer: layer(&request.layer)? };
         self.push_entity(transaction, PendingEntity::Circle(pending))
+    }
+
+    fn create_solid_fill(
+        &mut self,
+        transaction: u64,
+        request: cadcraft::extension::geometry::SolidFillRequest,
+    ) -> std::result::Result<u64, cadcraft::extension::drawing::HostError> {
+        self.require_write()?;
+        let boundary = solid_fill_boundary(&request.boundary)?;
+        let layer = layer(&request.layer)?;
+        let fill_appearance = appearance(&cadcraft::extension::geometry::EntityAppearance { color: request.color, lineweight_mm: None })?;
+        let entity = self.push_entity(transaction, PendingEntity::SolidFill(PendingSolidFill { boundary, layer }))?;
+        self.set_appearance(transaction, entity, fill_appearance)?;
+        Ok(entity)
+    }
+
+    fn set_entity_appearance(
+        &mut self,
+        transaction: u64,
+        entity: u64,
+        value: cadcraft::extension::geometry::EntityAppearance,
+    ) -> std::result::Result<(), cadcraft::extension::drawing::HostError> {
+        self.require_write()?;
+        if !self.entity_exists(entity) {
+            return Err(cadcraft::extension::drawing::HostError::InvalidInput("entity does not exist".into()));
+        }
+        self.set_appearance(transaction, entity, appearance(&value)?)
     }
 
     fn create_point(
@@ -600,8 +722,10 @@ impl Session {
         let text_style = drawing.header.str("TEXTSTYLE", "Standard");
         for operation in operations {
             match operation {
-                PendingOperation::Create { id, entity, metadata } => {
+                PendingOperation::Create { id, entity, metadata, appearance } => {
                     let mut common = base_common.clone();
+                    common.color = appearance.color;
+                    common.lineweight = appearance.lineweight;
                     if !metadata.is_empty() {
                         common.extension_data.insert(extension_id.clone(), metadata);
                     }
@@ -617,6 +741,32 @@ impl Session {
                         PendingEntity::Circle(circle) => {
                             common.layer = circle.layer;
                             EntityKind::Circle(Circle { center: circle.center, radius: circle.radius })
+                        }
+                        PendingEntity::SolidFill(fill) => {
+                            common.layer = fill.layer;
+                            let Some(first) = fill.boundary.first().copied() else {
+                                return Err(EngineError::Other("extension solid fill has no boundary points".into()));
+                            };
+                            let elevation = first.z;
+                            let origin = first.xy();
+                            EntityKind::Hatch(Hatch {
+                                pattern: "SOLID".into(),
+                                solid: true,
+                                loops: vec![HatchLoop {
+                                    vertices: fill.boundary.into_iter().map(|point| PolyVertex::new(point.xy())).collect(),
+                                    outer: true,
+                                    sources: Vec::new(),
+                                }],
+                                scale: 1.0,
+                                angle: 0.0,
+                                associative: false,
+                                style: 0,
+                                elevation,
+                                gradient: None,
+                                origin,
+                                background: None,
+                                pattern_lines: Vec::new(),
+                            })
                         }
                         PendingEntity::Point(point) => {
                             common.layer = point.layer;
@@ -673,6 +823,12 @@ impl Session {
                         }
                     })?;
                 }
+                PendingOperation::SetEntityAppearance { id, appearance } => {
+                    drawing.modify_entity(Handle(id), |entity| {
+                        entity.common.color = appearance.color;
+                        entity.common.lineweight = appearance.lineweight;
+                    })?;
+                }
                 PendingOperation::UpdatePoint { id, point } => {
                     if !matches!(drawing.entity(Handle(id)).map(|entity| &entity.kind), Some(EntityKind::Point(_))) {
                         return Err(EngineError::Other(format!("extension cannot update entity {id:X} as a point")));
@@ -722,10 +878,13 @@ impl Session {
 mod tests {
     use std::sync::Arc;
 
-    use cadcraft_doc::Drawing;
+    use cadcraft_color::{Color, Rgb};
+    use cadcraft_doc::{Drawing, EntityKind, Lineweight};
     use cadcraft_extensions::Permission;
 
-    use super::{HostState, MAX_OPERATIONS, PendingEntity, PendingLine, PendingOperation, PendingPoint, PendingText, Transaction, cadcraft};
+    use super::{
+        HostState, MAX_OPERATIONS, PendingAppearance, PendingEntity, PendingLine, PendingOperation, PendingPoint, PendingText, Transaction, cadcraft,
+    };
     use crate::Session;
     use crate::wasm_runtime::cadcraft::extension::drawing::Host as _;
 
@@ -807,6 +966,64 @@ mod tests {
     }
 
     #[test]
+    fn host_applies_extension_appearance_and_solid_fills() {
+        let mut host = host(&[Permission::DrawingWrite]);
+        let transaction = host.begin_transaction("Styled geometry".into());
+        assert!(transaction.is_ok());
+        let transaction = transaction.ok();
+        let Some(transaction) = transaction else {
+            return;
+        };
+        let line = host.create_line(
+            transaction,
+            cadcraft::extension::geometry::LineRequest {
+                start: cadcraft::extension::geometry::Point3 { x: 0.0, y: 0.0, z: 0.0 },
+                end: cadcraft::extension::geometry::Point3 { x: 1.0, y: 0.0, z: 0.0 },
+                layer: "SYMBOLS".into(),
+            },
+        );
+        assert!(line.is_ok());
+        let line = line.ok();
+        let Some(line) = line else {
+            return;
+        };
+        assert!(
+            host.set_entity_appearance(
+                transaction,
+                line,
+                cadcraft::extension::geometry::EntityAppearance { color: Some("#F47A20".into()), lineweight_mm: Some(0.25) },
+            )
+            .is_ok()
+        );
+        let fill = host.create_solid_fill(
+            transaction,
+            cadcraft::extension::geometry::SolidFillRequest {
+                boundary: vec![
+                    cadcraft::extension::geometry::Point3 { x: 0.0, y: 0.0, z: 0.0 },
+                    cadcraft::extension::geometry::Point3 { x: 1.0, y: 0.0, z: 0.0 },
+                    cadcraft::extension::geometry::Point3 { x: 0.0, y: 1.0, z: 0.0 },
+                ],
+                layer: "SYMBOLS".into(),
+                color: Some("#F47A20".into()),
+            },
+        );
+        assert!(fill.is_ok());
+        assert!(host.commit_transaction(transaction).is_ok());
+        let committed = host.committed.take();
+        assert!(committed.is_some());
+        let Some(transaction) = committed else {
+            return;
+        };
+        let mut session = Session::new();
+        assert!(session.apply_wasm_transaction(transaction).is_ok());
+        let styled = session.doc().ok().and_then(|drawing| drawing.entity(cadcraft_doc::Handle(line)));
+        assert!(styled.is_some_and(|entity| {
+            entity.common.color == Color::True(Rgb(0xF4, 0x7A, 0x20)) && entity.common.lineweight == Lineweight::Mm100(25)
+        }));
+        assert!(session.doc().is_ok_and(|drawing| { drawing.model.iter().any(|entity| matches!(entity.kind, EntityKind::Hatch(_))) }));
+    }
+
+    #[test]
     fn committed_operations_apply_as_one_undo_step() {
         let mut session = Session::new();
         let before = session.state().map(|state| state.doc.clone());
@@ -824,11 +1041,13 @@ mod tests {
                         layer: "SURVEY_REFERENCE".into(),
                     }),
                     metadata: Default::default(),
+                    appearance: PendingAppearance::default(),
                 },
                 PendingOperation::Create {
                     id: 0x101,
                     entity: PendingEntity::Point(PendingPoint { position: cadcraft_geom::Vec3::new(5.0, 2.0, 1.0), layer: "SURVEY_POINTS".into() }),
                     metadata: Default::default(),
+                    appearance: PendingAppearance::default(),
                 },
                 PendingOperation::Create {
                     id: 0x102,
@@ -840,6 +1059,7 @@ mod tests {
                         layer: "SURVEY_LABELS".into(),
                     }),
                     metadata: Default::default(),
+                    appearance: PendingAppearance::default(),
                 },
             ],
         };

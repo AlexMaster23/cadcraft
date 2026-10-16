@@ -1,6 +1,6 @@
 # CADCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (schema 2 WASM extension host) · **Target:** Autodesk AutoCAD 2027
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (schema 2 entity appearance and solid fills) · **Target:** Autodesk AutoCAD 2027
 
 How CADCraft is built today. This describes the code on `main`, not plans; plans live in
 [roadmap.md](roadmap.md). Agents: the rules that keep this shape (layering, never-crash,
@@ -100,6 +100,7 @@ allocations are capped (DXF tag counts, DWG size limits, hatch segment and islan
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | Added bounded schema 2 entity color/lineweight application and native polygonal solid fills |
 | 2026-10-16 | minor | Added schema 2 WebAssembly components, explicit drawing permissions, bounded execution and transactional CAD writes |
 | 2026-10-16 | minor | Extended the schema 2 host with native arc/circle creation and generic manager add/preview workflows |
 | 2026-10-16 | minor | Added the portable extension package/store, engine command registry and desktop/CLI host boundary |

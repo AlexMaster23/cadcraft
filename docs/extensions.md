@@ -123,8 +123,10 @@ explicit drawing capabilities:
 CADCraft calls the component world's `run-command(command, parameters-json)` export. `command` is
 the manifest command's `function`; input and output are bounded JSON strings. The
 [WIT contract](../crates/engine/wit/cadcraft-extension.wit) exposes guarded transactions, native
-line/arc/circle/point/text creation, bounded namespaced metadata, entity queries and guarded point/text
-updates and deletion. New drawing capabilities are added deliberately and versioned.
+line/arc/circle/point/text and polygonal solid-fill creation, bounded entity color and lineweight
+appearance, namespaced metadata, entity queries, and guarded point/text updates and deletion. Solid
+fills are stored as ordinary native `HATCH` entities. New drawing capabilities are added deliberately
+and versioned.
 
 The native runtime limits every invocation to 10 million WebAssembly fuel units, 64 MiB memory,
 10,000 drawing operations, and 1 MiB input/output JSON. A command may open one transaction. Host
