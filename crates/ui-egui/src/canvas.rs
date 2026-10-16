@@ -1223,6 +1223,12 @@ fn wheel_zoom_points(events: &[egui::Event], opts: &egui::InputOptions, page: f3
     if points.is_finite() { points } else { 0.0 }
 }
 
+/// The browser keeps a system crosshair over the drawn one. Some browsers show a privacy prompt
+/// whenever a page uses CSS `cursor: none`, which otherwise fires repeatedly while drafting.
+fn canvas_cursor_icon(system_cursor: bool, web: bool) -> egui::CursorIcon {
+    if system_cursor || web { egui::CursorIcon::Crosshair } else { egui::CursorIcon::None }
+}
+
 pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
     let full = ui.available_rect_before_wrap();
@@ -1842,8 +1848,9 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     }
     // Crosshair cursor.
     if inside {
-        // Hide the OS cursor under the drawn crosshair, unless assistive tech needs it (#39).
-        ui.ctx().set_cursor_icon(if app.ui.system_cursor { egui::CursorIcon::Crosshair } else { egui::CursorIcon::None });
+        // Hide the OS cursor under the drawn crosshair on native builds unless assistive tech needs
+        // it (#39). Browsers keep it visible to avoid repeated cursor-hidden privacy prompts.
+        ui.ctx().set_cursor_icon(canvas_cursor_icon(app.ui.system_cursor, cfg!(target_arch = "wasm32")));
         if let Some(hp) = hover_pos {
             draw_crosshair(app, &painter, rect, hp, selecting);
         }
@@ -2377,6 +2384,14 @@ pub(crate) mod tests {
 
     fn hs(v: &[u64]) -> Vec<Handle> {
         v.iter().map(|&h| Handle(h)).collect()
+    }
+
+    #[test]
+    fn browser_canvas_never_hides_the_system_cursor() {
+        assert_eq!(canvas_cursor_icon(false, true), egui::CursorIcon::Crosshair);
+        assert_eq!(canvas_cursor_icon(true, true), egui::CursorIcon::Crosshair);
+        assert_eq!(canvas_cursor_icon(false, false), egui::CursorIcon::None);
+        assert_eq!(canvas_cursor_icon(true, false), egui::CursorIcon::Crosshair);
     }
 
     /// A dragged object keeps its transparency in the GPU preview when TRANSPARENCYDISPLAY is
