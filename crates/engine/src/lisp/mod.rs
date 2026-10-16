@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cadcraft_doc::{Drawing, Handle};
+use cadcraft_extensions::Permission;
 
 use crate::{Input, Prompt, Session};
 use eval::{Ctx, Machine, Need, Outcome};
@@ -115,6 +116,11 @@ pub struct LispState {
     autoloaded: std::collections::HashSet<u64>,
     /// `acad.lsp` was loaded this session.
     acad_loaded: bool,
+    /// Enabled extension entry points loaded into each drawing: `(drawing uid, extension id)`.
+    extension_loaded: std::collections::HashSet<(u64, String)>,
+    /// Extension whose machine is in the current evaluator slice. The [`Run`] is temporarily
+    /// taken out of `self` while built-ins execute, so capability checks use this field.
+    executing_extension: Option<String>,
     /// Memory caps (lowered by tests).
     pub(crate) limits: Limits,
 }
@@ -165,6 +171,8 @@ struct Run {
     /// Cons cells alive when the run started: cells the drawing's variables already hold don't
     /// stop a run (it can still set them to nil) unless it adds more.
     cells_at_start: usize,
+    /// Extension whose entry point or command owns this run. `None` is ordinary user/startup LISP.
+    extension: Option<String>,
 }
 
 /// Steps per slice before the interface gets a frame.
@@ -217,12 +225,12 @@ impl Session {
         inputs: Vec<Value>,
     ) -> crate::Result<Option<std::result::Result<Value, String>>> {
         let forms = read::read_all(src).map_err(|e| crate::EngineError::Other(format!("; error: {}", e.msg)))?;
-        self.lisp_start(Machine::forms(forms), print, blocking, inputs, "LISP".into())
+        self.lisp_start(Machine::forms(forms), print, blocking, inputs, "LISP".into(), None)
     }
 
     /// Call a LISP function (`c:` commands typed at the command line).
-    fn lisp_call(&mut self, f: Value, label: String) -> crate::Result<Option<std::result::Result<Value, String>>> {
-        self.lisp_start(Machine::calling(f, Vec::new()), false, false, Vec::new(), label)
+    fn lisp_call(&mut self, f: Value, label: String, extension: Option<String>) -> crate::Result<Option<std::result::Result<Value, String>>> {
+        self.lisp_start(Machine::calling(f, Vec::new()), false, false, Vec::new(), label, extension)
     }
 
     fn lisp_start(
@@ -232,6 +240,7 @@ impl Session {
         blocking: bool,
         inputs: Vec<Value>,
         label: String,
+        extension: Option<String>,
     ) -> crate::Result<Option<std::result::Result<Value, String>>> {
         if self.lisp.active {
             return Err(crate::EngineError::Other("a LISP routine is already running".into()));
@@ -253,6 +262,7 @@ impl Session {
             handler: false,
             string_bytes: 0,
             cells_at_start: value::live_cells(),
+            extension,
         }));
         self.lisp_drive();
         if blocking {
@@ -308,10 +318,12 @@ impl Session {
             value::set_string_budget(run.string_bytes, self.lisp.limits.string_bytes);
             value::set_cell_limit(self.lisp.limits.cells.max(run.cells_at_start));
             let outcome = {
+                self.lisp.executing_extension = run.extension.clone();
                 let machine = &mut run.machine;
                 let mut ctx = Ctx { s: self, env: &mut env, depth: 0 };
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| machine.run(&mut ctx, SLICE)))
             };
+            self.lisp.executing_extension = None;
             run.string_bytes = value::string_bytes_used();
             let outcome = match outcome {
                 Ok(o) => o,
@@ -564,6 +576,14 @@ impl Session {
         self.lisp.active
     }
 
+    /// Whether the current extension run was granted one direct AutoLISP file capability.
+    /// Ordinary user/startup LISP remains compatible and is unrestricted by extension grants.
+    pub(crate) fn lisp_file_permission(&self, permission: Permission) -> bool {
+        let id = self.lisp.executing_extension.as_deref().or_else(|| self.lisp.run.as_ref().and_then(|run| run.extension.as_deref()));
+        let Some(id) = id else { return true };
+        self.extension_has_permission(id, permission)
+    }
+
     /// A `c:` function for a command name typed at the command line.
     pub(crate) fn lisp_command(&self, name: &str) -> Option<Value> {
         if self.lisp.active {
@@ -576,7 +596,62 @@ impl Session {
 
     /// Run a `c:` command.
     pub(crate) fn lisp_run_command(&mut self, name: &str, f: Value) -> crate::Result<()> {
-        self.lisp_call(f, name.to_ascii_uppercase()).map(|_| ())
+        let extension = self.extension_command(name).map(|(extension, _)| extension.manifest.id.clone());
+        self.lisp_call(f, name.to_ascii_uppercase(), extension).map(|_| ())
+    }
+
+    /// Run an extension's JSON-facing function to completion.
+    pub(crate) fn lisp_execute_extension(
+        &mut self,
+        extension_id: &str,
+        function: &str,
+        command_id: &str,
+        params: &serde_json::Value,
+    ) -> crate::Result<serde_json::Value> {
+        self.lisp_autoload();
+        let uid = self.state()?.uid;
+        let f = self.lisp.envs.get(&uid).map(|env| env.get(function)).unwrap_or_default();
+        if !matches!(f, Value::Func(_) | Value::Subr(_)) {
+            return Err(crate::EngineError::Other(format!("extension `{extension_id}` did not define `{function}`")));
+        }
+        let arg = extension_from_json(params);
+        let result = self.lisp_start(
+            Machine::calling(f, vec![arg]),
+            false,
+            true,
+            Vec::new(),
+            command_id.to_ascii_uppercase(),
+            Some(extension_id.to_string()),
+        )?;
+        match result {
+            Some(Ok(value)) => Ok(drawing::to_json(&value)),
+            Some(Err(message)) => Err(crate::EngineError::Other(message)),
+            None => Ok(serde_json::Value::Null),
+        }
+    }
+
+    /// Remove declared command symbols and make every enabled extension entry point run again.
+    pub(crate) fn lisp_replace_extensions(&mut self, old: &[crate::extensions::Extension], _new: &[crate::extensions::Extension]) {
+        for env in self.lisp.envs.values_mut() {
+            for extension in old {
+                for command in &extension.manifest.commands {
+                    env.set(&Sym::new(&format!("C:{}", command.id)), Value::Nil);
+                }
+            }
+        }
+        self.lisp.extension_loaded.clear();
+    }
+}
+
+/// Extension JSON objects become association lists whose keys are strings. Ordinary AutoLISP
+/// JSON conversion keeps its historical object-as-string behavior.
+fn extension_from_json(value: &serde_json::Value) -> Value {
+    match value {
+        serde_json::Value::Object(fields) => {
+            Value::list(fields.iter().map(|(key, value)| Value::cons(Value::str(key), extension_from_json(value))).collect::<Vec<_>>())
+        }
+        serde_json::Value::Array(items) => Value::list(items.iter().map(extension_from_json).collect::<Vec<_>>()),
+        other => drawing::from_json(other),
     }
 }
 

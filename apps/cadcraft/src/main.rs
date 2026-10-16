@@ -16,6 +16,7 @@
 
 mod control_server;
 mod desktop_theme;
+mod extensions;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
@@ -127,7 +128,7 @@ pub fn install_io() {
 }
 
 fn services() -> Services {
-    Services {
+    let mut services = Services {
         pick_open: Some(Box::new(|| {
             rfd::FileDialog::new()
                 .add_filter(i18n::t("Drawings (DWG, DXF)"), &["dwg", "dxf", "dwt"])
@@ -143,7 +144,12 @@ fn services() -> Services {
                 .save_file()
                 .map(|p| p.to_string_lossy().to_string())
         })),
+        ..Default::default()
+    };
+    if let Some(dir) = config_dir() {
+        extensions::install_services(&mut services, dir.join("extensions"));
     }
+    services
 }
 
 /// File types for the Save dialog, the suggested name's type first: Windows adds the first
@@ -309,6 +315,12 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let mut app = CadApp::new(Session::empty(), services());
+            if let Err(error) = app.reload_extensions()
+                && app.services.extension_snapshot.is_some()
+            {
+                log::warn!("extensions: {error}");
+                app.set_status(format!("Extensions: {error}"));
+            }
             let (workspace, restored, workspace_error) = workspace::Workspace::load();
             if let Some(ui) = restored {
                 app.ui = ui;

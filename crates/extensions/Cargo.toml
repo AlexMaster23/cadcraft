@@ -1,0 +1,16 @@
+[package]
+name = "cadcraft-extensions"
+description = "Validated package format and installed-extension store for CADCraft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version = "1.95"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+semver = { workspace = true }
+zip = { workspace = true }

@@ -13,6 +13,7 @@ pub mod audit;
 pub mod autosave;
 pub mod blockedit;
 pub mod cmd;
+pub mod extensions;
 mod finite;
 pub mod grip_dims;
 pub mod grips;
@@ -42,6 +43,7 @@ pub use cadcraft_geom as geom;
 pub use cadcraft_render as render;
 pub use cmd::hatch::{HatchPicks, PatternChoice, PickMode, pattern_choices};
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
+pub use extensions::Extension;
 pub use prompt::{Accept, Drag, Input, Interactive, Picker, Prompt, Step};
 
 #[derive(Debug, thiserror::Error)]
@@ -671,6 +673,9 @@ pub struct Session {
     lisp_last: Option<std::result::Result<lisp::value::Value, String>>,
     /// What the last HATCHPICK kept (the Hatch and Gradient dialog's picks).
     pub hatch_picks: Option<cmd::hatch::HatchPicks>,
+    /// Installed extension manifests and sources. The host replaces this catalog after an
+    /// install, enable/disable, update or uninstall operation.
+    extensions: extensions::Registry,
 }
 
 impl Default for Session {
@@ -719,6 +724,7 @@ impl Session {
             lisp: lisp::LispState::default(),
             lisp_last: None,
             hatch_picks: None,
+            extensions: extensions::Registry::default(),
         }
     }
     pub fn new_drawing(&mut self, metric: bool) -> usize {
@@ -861,7 +867,16 @@ impl Session {
 
     /// Run a command with JSON parameters (no dialogs). Records undo when the drawing changes.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
-        let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+        let spec = match find_command(id) {
+            Some(spec) => spec,
+            None => {
+                let Some((extension, command)) = self.extension_command(id) else { return Err(EngineError::UnknownCommand(id.to_string())) };
+                let extension_id = extension.manifest.id.clone();
+                let function = command.function.clone();
+                let command_id = command.id.clone();
+                return self.lisp_execute_extension(&extension_id, &function, &command_id, params);
+            }
+        };
         (spec.enabled)(self).map_err(|m| EngineError::Disabled(spec.id.into(), m))?;
         if let Some(why) = cmd::blocks::bedit::refused_in_editor(self, spec.id) {
             return Err(EngineError::Disabled(spec.id.into(), why));
@@ -935,6 +950,31 @@ impl Session {
         let dashed = cmd::resolve_alias(&name.trim_start_matches(['_', '.']).to_ascii_lowercase());
         let id = if find_command(&dashed).is_some() { dashed } else { cmd::resolve_alias(&lower) };
         let Some(spec) = find_command(&id) else {
+            if !transparent && let Some(extension_id) = self.resolve_extension_command(&lower) {
+                let Some((extension, command)) = self.extension_command(&extension_id) else {
+                    return Err(EngineError::UnknownCommand(name.to_string()));
+                };
+                let owner = extension.manifest.id.clone();
+                let command_id = command.id.clone();
+                let interactive = command.interactive;
+                if self.running.is_some() {
+                    self.cancel();
+                }
+                self.last_command = Some(command_id.clone());
+                self.echo(format!("Command: {}", command_id.to_ascii_uppercase()));
+                if interactive {
+                    self.lisp_autoload();
+                    let f = self
+                        .lisp_command(&command_id)
+                        .ok_or_else(|| EngineError::Other(format!("extension `{owner}` did not define `C:{}`", command_id.to_ascii_uppercase())))?;
+                    return self.lisp_run_command(&command_id, f);
+                }
+                let result = self.execute(&command_id, &Value::Null)?;
+                if !result.is_null() {
+                    self.echo(result.to_string());
+                }
+                return Ok(());
+            }
             // A command defined in LISP: (defun c:NAME …).
             if !transparent && let Some(f) = self.lisp_command(&lower) {
                 if self.running.is_some() {
@@ -1451,7 +1491,7 @@ impl Session {
                 {
                     let params: Value =
                         serde_json::from_str(json.trim()).map_err(|e| EngineError::BadParams { cmd: name.into(), msg: e.to_string() })?;
-                    let id = cmd::resolve_alias(&name.to_ascii_lowercase());
+                    let id = self.resolve_command_name(&name.to_ascii_lowercase());
                     let r = self.execute(&id, &params)?;
                     if !r.is_null() {
                         self.echo(r.to_string());

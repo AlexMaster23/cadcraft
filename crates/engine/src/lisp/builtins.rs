@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+use cadcraft_extensions::Permission;
+
 use super::eval::{Ctx, Flow, Special};
 use super::value::{Builtin, BuiltinKind, Sym, Value, charge_bytes, check_string_len, eq, equal, real_text, to_text};
 use super::{Env, LispError, drawing, input, read};
@@ -913,6 +915,10 @@ fn open(ctx: &mut Ctx<'_>, a: Vec<Value>) -> Result<Flow, LispError> {
         "a" => (true, true),
         _ => return Err(LispError::new(format!("bad argument value: file mode {mode}"))),
     };
+    let permission = if writing { Permission::WriteFiles } else { Permission::ReadFiles };
+    if !ctx.s.lisp_file_permission(permission) {
+        return Err(LispError::new(format!("extension permission required: {}", if writing { "write-files" } else { "read-files" })));
+    }
     let mut f = LispFile { path: path.clone(), writing, append, lines: Default::default(), text: String::new() };
     if !writing {
         match read_text_file(&path) {
@@ -955,10 +961,13 @@ fn write_line(ctx: &mut Ctx<'_>, a: Vec<Value>) -> Result<Flow, LispError> {
     Ok(Flow::Value(Value::Str(s)))
 }
 
-fn findfile(a: &[Value]) -> R {
-    arity(a, 1, 1)?;
+fn findfile(ctx: &mut Ctx<'_>, a: Vec<Value>) -> Result<Flow, LispError> {
+    arity(&a, 1, 1)?;
+    if !ctx.s.lisp_file_permission(Permission::ReadFiles) {
+        return Err(LispError::new("extension permission required: read-files"));
+    }
     let p = string(&a[0])?;
-    Ok(if file_exists(&p) { Value::Str(p) } else { Value::Nil })
+    Ok(Flow::Value(if file_exists(&p) { Value::Str(p) } else { Value::Nil }))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1377,7 +1386,7 @@ static BUILTINS: &[Builtin] = &[
     pure!("DISTANCE", distance),
     pure!("ANGLE", angle),
     pure!("INTERS", inters),
-    pure!("FINDFILE", findfile),
+    ctx!("FINDFILE", findfile),
     pure!("VL-CATCH-ALL-ERROR-P", vl_catch_all_error_p),
     pure!("VL-CATCH-ALL-ERROR-MESSAGE", vl_catch_all_error_message),
     pure!("VL-LOAD-COM", noop),

@@ -92,7 +92,7 @@ fn tab(app: &mut CadApp) {
     {
         // Both values typed: Tab locks the second one as well.
         app.cmd.locked_second = Some(app.cmd.buffer.clone());
-    } else if let Some(s) = suggestions(&app.cmd.buffer).first() {
+    } else if let Some(s) = suggestions(&app.session, &app.cmd.buffer).first() {
         app.cmd.buffer = s.id.clone();
     }
 }
@@ -105,22 +105,23 @@ pub struct Suggestion {
     /// Display text shown in the AutoComplete list (e.g. "REC (RECTANG)" or "RECOVER").
     pub display: String,
     /// Human-readable command label (e.g. "Rectangle").
-    pub label: &'static str,
+    pub label: String,
 }
 
 /// Matching command names/aliases for AutoComplete.
-fn suggestions(prefix: &str) -> Vec<Suggestion> {
+fn suggestions(session: &cadcraft_engine::Session, prefix: &str) -> Vec<Suggestion> {
     if prefix.is_empty() || prefix.contains(' ') {
         return Vec::new();
     }
     let p = prefix.to_ascii_lowercase();
 
     let mut out: Vec<Suggestion> = Vec::new();
-    let mut seen_ids: HashSet<&'static str> = HashSet::new();
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    let commands = session.command_infos();
 
     // 1. Exact match: alias resolution or exact command name match.
-    let resolved = cadcraft_engine::cmd::resolve_alias(&p);
-    if let Some(spec) = cadcraft_engine::cmd::find_command(&resolved)
+    let resolved = session.resolve_command_name(&p);
+    if let Some(spec) = session.command_info(&resolved)
         && !spec.id.contains('.')
     {
         let display =
@@ -130,32 +131,32 @@ fn suggestions(prefix: &str) -> Vec<Suggestion> {
     }
 
     // 2. Command ID prefix matches (excluding already matched exact command).
-    let mut id_matches: Vec<&'static cadcraft_engine::CommandSpec> =
-        cadcraft_engine::command_specs().iter().filter(|c| !c.id.contains('.') && !seen_ids.contains(c.id) && c.id.starts_with(&p)).collect();
-    id_matches.sort_by_key(|c| (c.id.len(), c.id));
+    let mut id_matches: Vec<&cadcraft_engine::CommandInfo> =
+        commands.iter().filter(|c| !c.id.contains('.') && !seen_ids.contains(&c.id) && c.id.starts_with(&p)).collect();
+    id_matches.sort_by_key(|c| (c.id.len(), c.id.as_str()));
     for c in id_matches {
-        out.push(Suggestion { id: c.id.to_ascii_uppercase(), display: c.id.to_ascii_uppercase(), label: c.label });
-        seen_ids.insert(c.id);
+        out.push(Suggestion { id: c.id.to_ascii_uppercase(), display: c.id.to_ascii_uppercase(), label: c.label.clone() });
+        seen_ids.insert(c.id.clone());
     }
 
     // 3. Command alias prefix matches (for commands not yet added).
-    let mut alias_matches: Vec<(&'static str, &'static cadcraft_engine::CommandSpec)> = Vec::new();
-    for c in cadcraft_engine::command_specs() {
-        if c.id.contains('.') || seen_ids.contains(c.id) {
+    let mut alias_matches: Vec<(&str, &cadcraft_engine::CommandInfo)> = Vec::new();
+    for c in &commands {
+        if c.id.contains('.') || seen_ids.contains(&c.id) {
             continue;
         }
-        let matching_alias = c.aliases.iter().copied().filter(|a| a.starts_with(&p)).min_by_key(|a| (a.len(), *a));
+        let matching_alias = c.aliases.iter().map(String::as_str).filter(|a| a.starts_with(&p)).min_by_key(|a| (a.len(), *a));
         if let Some(alias) = matching_alias {
             alias_matches.push((alias, c));
         }
     }
-    alias_matches.sort_by_key(|(alias, c)| (alias.len(), *alias, c.id));
+    alias_matches.sort_by_key(|(alias, c)| (alias.len(), *alias, c.id.as_str()));
     for (alias, c) in alias_matches {
-        if seen_ids.insert(c.id) {
+        if seen_ids.insert(c.id.clone()) {
             out.push(Suggestion {
                 id: c.id.to_ascii_uppercase(),
                 display: format!("{} ({})", alias.to_ascii_uppercase(), c.id.to_ascii_uppercase()),
-                label: c.label,
+                label: c.label.clone(),
             });
         }
     }
@@ -509,7 +510,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui, canvas: Rect) {
     );
     // AutoComplete list.
     if !app.session.prompting() {
-        let sug = suggestions(&app.cmd.buffer);
+        let sug = suggestions(&app.session, &app.cmd.buffer);
         if !sug.is_empty() {
             let rh = 20.0;
             let lr = Rect::from_min_size(
@@ -531,7 +532,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui, canvas: Rect) {
                 p.text(
                     Pos2::new(r.right() - 8.0, r.center().y),
                     egui::Align2::RIGHT_CENTER,
-                    crate::i18n::t(s.label),
+                    crate::i18n::t(&s.label),
                     crate::theme::small(),
                     t.text_faint,
                 );
@@ -571,7 +572,7 @@ fn zones(app: &CadApp, canvas: Rect, bar: Rect) -> Zones {
     let grip = Rect::from_min_max(pos2(bar.left(), top - 3.0), pos2(bar.right(), top + 3.0));
     let mut all = bar.union(grip);
     if !app.session.prompting() {
-        let k = suggestions(&app.cmd.buffer).len();
+        let k = suggestions(&app.session, &app.cmd.buffer).len();
         if k > 0 {
             let above = if n == 0 { 0.0 } else { LINE_H * n as f32 + 6.0 };
             all = all.union(Rect::from_min_size(pos2(bar.left(), bar.top() - 6.0 - 20.0 * k as f32 - above), vec2(bar.width(), 1.0)));
@@ -779,9 +780,13 @@ mod delete_key_tests {
 mod autocomplete_tests {
     use super::*;
 
+    fn complete(prefix: &str) -> Vec<Suggestion> {
+        suggestions(&cadcraft_engine::Session::new(), prefix)
+    }
+
     #[test]
     fn exact_alias_is_first_suggestion_with_alias_display() {
-        let rec = suggestions("rec");
+        let rec = complete("rec");
         assert!(!rec.is_empty());
         assert_eq!(rec[0].id, "RECTANG");
         assert_eq!(rec[0].display, "REC (RECTANG)");
@@ -791,26 +796,26 @@ mod autocomplete_tests {
         assert_eq!(rec[1].id, "RECOVER");
         assert_eq!(rec[1].display, "RECOVER");
 
-        let l = suggestions("l");
+        let l = complete("l");
         assert_eq!(l[0].id, "LINE");
         assert_eq!(l[0].display, "L (LINE)");
 
-        let c = suggestions("c");
+        let c = complete("c");
         assert_eq!(c[0].id, "CIRCLE");
         assert_eq!(c[0].display, "C (CIRCLE)");
 
-        let co = suggestions("co");
+        let co = complete("co");
         assert_eq!(co[0].id, "COPY");
         assert_eq!(co[0].display, "CO (COPY)");
     }
 
     #[test]
     fn prefix_without_alias_shows_command_id() {
-        let rect = suggestions("rect");
+        let rect = complete("rect");
         assert_eq!(rect[0].id, "RECTANG");
         assert_eq!(rect[0].display, "RECTANG");
 
-        let line = suggestions("line");
+        let line = complete("line");
         assert_eq!(line[0].id, "LINE");
         assert_eq!(line[0].display, "LINE");
     }

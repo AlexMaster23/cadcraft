@@ -1,6 +1,6 @@
 # CADCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (first committed architecture doc, written from the code on main at bd2412f) · **Target:** Autodesk AutoCAD 2027
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (portable extension subsystem) · **Target:** Autodesk AutoCAD 2027
 
 How CADCraft is built today. This describes the code on `main`, not plans; plans live in
 [roadmap.md](roadmap.md). Agents: the rules that keep this shape (layering, never-crash,
@@ -8,7 +8,8 @@ everything-is-a-command, clean-room) are in [AGENTS.md](../AGENTS.md).
 
 ## Workspace
 
-About 57,000 lines of Rust in 12 library crates, 3 apps and `xtask` (counted 2026-10-10).
+About 57,000 lines of Rust in 13 library crates, 3 apps and `xtask` (base count 2026-10-10;
+the extension crate was added 2026-10-16).
 
 | Layer | Crate | Lines | What it does |
 |---|---|---:|---|
@@ -21,6 +22,7 @@ About 57,000 lines of Rust in 12 library crates, 3 apps and `xtask` (counted 202
 | L2 | `constraints` | 2,504 | Own parametric solver: damped Gauss–Newton / Levenberg–Marquardt (`lm.rs`), 12 geometric and the dimensional constraints, expressions and parameters, AutoConstrain inference |
 | L3 | `io` | 5,124 | DXF ⇄ document mapping (`dxf_read.rs`, `dxf_write.rs`, CADCraft xdata in `dxf_ext.rs`), PDF plotting, SVG and PNG export |
 | L3 | `dwg` | 149 | DWG through a DXF bridge: the `acadrust` crate (MPL-2.0, unmodified) converts DWG ⇄ DXF bytes; nothing else sees its types. Native only |
+| standalone | `extensions` | 782 | Schema-1 manifests, bounded `.cadcraft-extension` ZIP validation and packing, compatibility checks, and the native per-user install store. It owns no drawing or UI state and also compiles for WASM |
 | L4 | `engine` | 25,090 | `Session`, the command registry (`cmd/*`), command-line parser and prompt machines, object snaps and polar/ortho (`snap.rs`), selection (`select.rs`), grips (`grips.rs`), associativity (`assoc.rs`), system variables, units, undo, R-tree spatial index (`spatial.rs`) |
 | L5 | `ui-egui` | 9,849 | The swappable egui front end: GPU canvas (`gpu.rs`, wgpu), menus and shortcuts (`menus.rs`), command line, palettes, Layer Properties Manager and other dialogs, ViewCube, icons drawn in code, themes, the interface string catalog (`i18n/`, English, Ukrainian and German), JSON control channel (`control.rs`) |
 | L5 | `mcp` | 559 | MCP server (JSON-RPC 2.0 over stdio) on a headless session or bridged to a running app |
@@ -53,6 +55,11 @@ check and an optional interactive prompt machine. 295 engine commands are regist
 interactive prompts, counted from source 2026-10-10), plus about 30 UI-only commands in
 `crates/ui-egui/src/menus.rs`. The command line, menus, toolbar, Tool Sets, scripts, CLI, control
 channel and MCP all reach the same commands. JSON calls never open dialogs.
+
+Installed extension commands join that same registry through `engine::Extension`. Their validated
+AutoLISP entry point loads into each drawing, and the desktop host owns installation and
+persistence. The UI sees the store only through injected services, keeping `ui-egui` portable.
+See [extensions.md](extensions.md) for the package contract and security boundary.
 
 ## Rendering
 
@@ -91,4 +98,5 @@ allocations are capped (DXF tag counts, DWG size limits, hatch segment and islan
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | Added the portable extension package/store, engine command registry and desktop/CLI host boundary |
 | 2026-10-10 | major | First committed architecture doc, measured from the code (crate sizes, entity kinds, command counts) |

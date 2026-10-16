@@ -953,6 +953,9 @@ pub fn load_source(s: &Session, name: &str) -> Option<String> {
     if let Some(t) = s.lisp_file(name) {
         return Some(t);
     }
+    if !s.lisp_file_permission(cadcraft_extensions::Permission::ReadFiles) {
+        return None;
+    }
     let candidates =
         if std::path::Path::new(name).extension().is_none() { vec![format!("{name}.lsp"), name.to_string()] } else { vec![name.to_string()] };
     // As given (a path, or relative to the working folder), then in the support folder.
