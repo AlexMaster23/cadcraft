@@ -161,6 +161,14 @@ fn services() -> Services {
             let name = path.file_name().map_or_else(|| path.to_string_lossy().to_string(), |name| name.to_string_lossy().to_string());
             Ok(Some(LoadedTextTable { name, text }))
         })),
+        save_extension_text: Some(Box::new(|name: &str, text: &str| {
+            let Some(path) = rfd::FileDialog::new().set_file_name(name).add_filter("CSV text", &["csv"]).add_filter("Text", &["txt"]).save_file()
+            else {
+                return Ok(None);
+            };
+            std::fs::write(&path, text.as_bytes()).map_err(|error| format!("Cannot write {}: {error}", path.display()))?;
+            Ok(Some(path.to_string_lossy().to_string()))
+        })),
         ..Default::default()
     };
     if let Some(dir) = config_dir() {

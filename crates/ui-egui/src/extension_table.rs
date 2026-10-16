@@ -57,7 +57,9 @@ pub struct State {
 /// Open the native dialog attached to an enabled extension command or alias.
 pub fn open(app: &mut CadApp, name: &str) -> bool {
     let Some(command) = app.session.extension_command_ui(name) else { return false };
-    let CommandUi::Table { title, description, submit_label, accent, selects, columns } = command.ui;
+    let CommandUi::Table { title, description, submit_label, accent, selects, columns } = command.ui else {
+        return false;
+    };
     let selects = selects.into_iter().map(|spec| SelectState { value: spec.default.clone(), spec }).collect();
     app.extension_table = State {
         command_id: command.command_id,

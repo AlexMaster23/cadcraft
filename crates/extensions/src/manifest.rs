@@ -136,6 +136,27 @@ pub struct TableColumn {
     pub aliases: Vec<String>,
 }
 
+/// One column in a host-rendered extension data manager.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagerColumn {
+    pub key: String,
+    pub label: String,
+    pub kind: TableColumnKind,
+    #[serde(default)]
+    pub editable: bool,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub unique: bool,
+    #[serde(default = "default_manager_column_width")]
+    pub width: u16,
+}
+
+const fn default_manager_column_width() -> u16 {
+    120
+}
+
 /// One value in a host-rendered table-dialog selector.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -169,6 +190,23 @@ pub enum CommandUi {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         selects: Vec<TableSelect>,
         columns: Vec<TableColumn>,
+    },
+    /// A native, virtualized editor for bounded records loaded and mutated through the command's
+    /// JSON action protocol. Reserved row fields identify the record and its drawing entities.
+    Manager {
+        title: String,
+        description: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        accent: Option<String>,
+        id_key: String,
+        entity_ids_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        renumber_key: Option<String>,
+        #[serde(default)]
+        allow_delete: bool,
+        #[serde(default)]
+        allow_export: bool,
+        columns: Vec<ManagerColumn>,
     },
 }
 
@@ -447,6 +485,58 @@ impl Manifest {
                     }
                 }
             }
+            if let Some(CommandUi::Manager {
+                title,
+                description,
+                accent,
+                id_key,
+                entity_ids_key,
+                renumber_key,
+                allow_delete: _,
+                allow_export: _,
+                columns,
+            }) = &command.ui
+            {
+                if command.interactive {
+                    return Err(ValidationError::new(format!("{base}.ui"), "a host-rendered manager cannot also use an interactive command prompt"));
+                }
+                if !printable(title, 100) || !printable(description, 500) {
+                    return Err(ValidationError::new(format!("{base}.ui"), "title and description must be bounded printable text"));
+                }
+                if accent.as_deref().is_some_and(|value| !color(value)) {
+                    return Err(ValidationError::new(format!("{base}.ui.accent"), "must be a #RRGGBB colour"));
+                }
+                if !command_name(id_key) || !command_name(entity_ids_key) || id_key == entity_ids_key {
+                    return Err(ValidationError::new(format!("{base}.ui"), "idKey and entityIdsKey must be different lower-case field names"));
+                }
+                if columns.is_empty() || columns.len() > 16 {
+                    return Err(ValidationError::new(format!("{base}.ui.columns"), "must contain between 1 and 16 columns"));
+                }
+                let mut keys = HashSet::from([id_key.to_ascii_lowercase(), entity_ids_key.to_ascii_lowercase()]);
+                for (column_index, column) in columns.iter().enumerate() {
+                    let field = format!("{base}.ui.columns[{column_index}]");
+                    if column.key.len() > 64 || !command_name(&column.key) || !keys.insert(column.key.to_ascii_lowercase()) {
+                        return Err(ValidationError::new(format!("{field}.key"), "must be a unique lower-case field name"));
+                    }
+                    if !printable(&column.label, 80) {
+                        return Err(ValidationError::new(format!("{field}.label"), "must contain 1 to 80 printable characters"));
+                    }
+                    if !(60..=400).contains(&column.width) {
+                        return Err(ValidationError::new(format!("{field}.width"), "must be between 60 and 400 pixels"));
+                    }
+                    if !column.editable && (column.required || column.unique) {
+                        return Err(ValidationError::new(field, "read-only columns cannot declare required or unique editing constraints"));
+                    }
+                }
+                if !columns.iter().any(|column| column.editable) {
+                    return Err(ValidationError::new(format!("{base}.ui.columns"), "must contain at least one editable column"));
+                }
+                if let Some(key) = renumber_key
+                    && !columns.iter().any(|column| column.key == *key && column.editable && column.kind == TableColumnKind::Text)
+                {
+                    return Err(ValidationError::new(format!("{base}.ui.renumberKey"), "must name an editable text column"));
+                }
+            }
         }
         if self.toolsets.len() > 16 {
             return Err(ValidationError::new("toolsets", "contains more than 16 groups"));
@@ -599,6 +689,37 @@ mod tests {
             }],
         });
         assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn accepts_a_bounded_native_data_manager() {
+        let mut manifest = good();
+        manifest.commands[0].interactive = false;
+        manifest.commands[0].ui = Some(CommandUi::Manager {
+            title: "Point manager".into(),
+            description: "Edit linked survey points.".into(),
+            accent: Some("#F47A20".into()),
+            id_key: "id".into(),
+            entity_ids_key: "entity-ids".into(),
+            renumber_key: Some("number".into()),
+            allow_delete: true,
+            allow_export: true,
+            columns: vec![ManagerColumn {
+                key: "number".into(),
+                label: "Point number".into(),
+                kind: TableColumnKind::Text,
+                editable: true,
+                required: true,
+                unique: true,
+                width: 120,
+            }],
+        });
+        assert!(manifest.validate().is_ok());
+
+        if let Some(CommandUi::Manager { columns, .. }) = &mut manifest.commands[0].ui {
+            columns[0].width = 20;
+        }
+        assert!(manifest.validate().is_err());
     }
 
     #[test]

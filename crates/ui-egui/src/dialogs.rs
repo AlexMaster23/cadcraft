@@ -27,6 +27,7 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
         "commands" => commands(app, ctx, &mut open),
         "extensions" => extensions(app, ctx, &mut open),
         "extension-table" => crate::extension_table::dialog(app, ctx, &mut open),
+        "extension-manager" => crate::extension_manager::dialog(app, ctx, &mut open),
         "blocks" => blocks(app, ctx, &mut open),
         "bedit" => crate::bedit::dialog(app, ctx, &mut open),
         "authoring" => crate::bedit::authoring_dialog(app, ctx, &mut open),

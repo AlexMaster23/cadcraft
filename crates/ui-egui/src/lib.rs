@@ -48,6 +48,7 @@ pub mod viewcube;
 pub mod vpscale;
 
 pub mod exchange;
+pub mod extension_manager;
 pub mod extension_table;
 
 use std::sync::mpsc::Receiver;
@@ -221,6 +222,9 @@ pub struct Services {
     pub pick_save: Option<Box<dyn Fn(&str) -> Option<String>>>,
     pub pick_extension: Option<Box<dyn Fn() -> Option<String>>>,
     pub pick_extension_table: Option<Box<dyn Fn() -> Result<Option<LoadedTextTable>, String>>>,
+    /// Save bounded UTF-8 text produced explicitly by an extension command. The shell owns the
+    /// picker and filesystem; cancellation returns `Ok(None)`.
+    pub save_extension_text: Option<Box<dyn Fn(&str, &str) -> Result<Option<String>, String>>>,
     pub extension_snapshot: Option<Box<dyn Fn() -> Result<ExtensionSnapshot, String>>>,
     pub install_extension: Option<Box<dyn Fn(&str) -> Result<ExtensionSnapshot, String>>>,
     pub enable_extension: Option<Box<dyn Fn(&str, bool) -> Result<ExtensionSnapshot, String>>>,
@@ -282,6 +286,7 @@ pub struct CadApp {
     pub bedit: bedit::State,
     /// Host-rendered declarative table supplied by an extension manifest.
     pub extension_table: extension_table::State,
+    pub extension_manager: extension_manager::State,
 }
 
 impl CadApp {
@@ -321,6 +326,7 @@ impl CadApp {
             hatch_dlg: None,
             bedit: bedit::State::default(),
             extension_table: extension_table::State::default(),
+            extension_manager: extension_manager::State::default(),
         }
     }
 
@@ -380,6 +386,9 @@ impl CadApp {
         if extension_table::open(self, name) {
             return;
         }
+        if extension_manager::open(self, name) {
+            return;
+        }
         if let Err(e) = self.session.start(name) {
             self.session.echo(e.to_string());
         }
@@ -396,6 +405,9 @@ impl CadApp {
                 return None;
             }
             if !first.is_empty() && !json_form && extension_table::open(self, &first.to_ascii_lowercase()) {
+                return None;
+            }
+            if !first.is_empty() && !json_form && extension_manager::open(self, &first.to_ascii_lowercase()) {
                 return None;
             }
         }

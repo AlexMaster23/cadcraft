@@ -219,8 +219,76 @@ the control channel or CLI remains dialog-free and passes the caller's JSON dire
 
 File selection is a host action: a schema 2 guest receives only the submitted JSON and gains no
 ambient file-system access. Declarative tables are intentionally narrower than arbitrary
-extension-owned windows; future UI kinds can extend the versioned manifest without allowing guest
-code to run inside the renderer.
+extension-owned windows.
+
+## Host-rendered data managers
+
+A command can declare a bounded native manager for existing extension-owned records. As with
+tables, CADCraft owns the renderer, validation, drawing selection/zoom and save-file dialog; the
+extension receives explicit JSON actions through its ordinary command function:
+
+```json
+{
+  "id": "survey.points.manager",
+  "label": "Point Manager...",
+  "menu": ["Survey", "Points", "Point Manager..."],
+  "aliases": ["POINTMANAGER"],
+  "function": "manage-points",
+  "interactive": false,
+  "ui": {
+    "kind": "manager",
+    "title": "Survey — Point Manager",
+    "description": "Review and edit linked survey points.",
+    "accent": "#F47A20",
+    "idKey": "id",
+    "entityIdsKey": "entities",
+    "renumberKey": "number",
+    "allowDelete": true,
+    "allowExport": true,
+    "columns": [
+      {
+        "key": "number",
+        "label": "Point number",
+        "kind": "text",
+        "editable": true,
+        "required": true,
+        "unique": true,
+        "width": 120
+      },
+      {
+        "key": "status",
+        "label": "Link status",
+        "kind": "text",
+        "width": 110
+      }
+    ]
+  }
+}
+```
+
+Managers have 1–16 unique columns. `kind` is `text` or `number`; `editable`, `required` and
+`unique` default to false, and read-only columns cannot be required or unique. Width is 60–400
+logical pixels. `idKey` identifies a bounded unique string on every row; `entityIdsKey` identifies
+an array of drawing handles used by **Select in drawing** and **Locate**. The optional
+`renumberKey` must name an editable text column.
+
+Opening a manager calls the command with `{"action":"list"}`. Its response contains `rows` and
+may contain a `summary`. CADCraft accepts at most 2,000 rows, 64 KiB per field and 32 drawing
+handles per row, virtualizes the visible body and validates required/numeric/unique fields before
+calling the extension. Host actions use these payloads:
+
+| Action | Request fields | Purpose |
+|---|---|---|
+| `update` | `rows`: changed objects only | Commit staged cell edits |
+| `synchronize` | `ids` | Repair or refresh selected records and linked entities |
+| `renumber` | `ids`, `prefix`, `start`, `step` | Deterministically renumber selected records |
+| `delete` | `ids` | Delete selected records after host-side two-click confirmation |
+| `export` | `ids` (empty means all) | Return `fileName` and UTF-8 `content` for host-owned saving |
+
+After a successful mutation, the command returns a fresh `rows` snapshot. Export content is capped
+at 8 MiB; filenames are portable basename components. The guest never learns the chosen save path
+and still has no ambient file access. Programmatic command invocation remains dialog-free and can
+send the same action payloads directly.
 
 ## Tool Sets contributions
 
