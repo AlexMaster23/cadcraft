@@ -29,6 +29,7 @@ pub enum PackageError {
     PackageTooLarge,
     MissingEntrypoint(String),
     EntrypointNotUtf8,
+    EntrypointNotWasm,
     Io(String),
 }
 
@@ -45,6 +46,7 @@ impl fmt::Display for PackageError {
             PackageError::PackageTooLarge => write!(f, "extension exceeds {MAX_PACKAGE_BYTES} uncompressed bytes"),
             PackageError::MissingEntrypoint(path) => write!(f, "extension entrypoint `{path}` is missing"),
             PackageError::EntrypointNotUtf8 => write!(f, "extension entrypoint is not UTF-8 text"),
+            PackageError::EntrypointNotWasm => write!(f, "extension entrypoint is not a WebAssembly binary"),
             PackageError::Io(message) => write!(f, "cannot pack extension: {message}"),
         }
     }
@@ -93,13 +95,24 @@ impl Package {
         let manifest_bytes = files.get(MANIFEST).ok_or(PackageError::MissingManifest)?;
         let manifest: Manifest = serde_json::from_slice(manifest_bytes).map_err(|error| PackageError::InvalidManifest(error.to_string()))?;
         manifest.validate().map_err(|error| PackageError::InvalidManifest(error.to_string()))?;
-        let entrypoint = files.get(&manifest.entrypoint).ok_or_else(|| PackageError::MissingEntrypoint(manifest.entrypoint.clone()))?;
-        std::str::from_utf8(entrypoint).map_err(|_| PackageError::EntrypointNotUtf8)?;
+        let entrypoint_path = manifest.entrypoint_path().ok_or_else(|| PackageError::InvalidManifest("entrypoint is not defined".into()))?;
+        let entrypoint = files.get(entrypoint_path).ok_or_else(|| PackageError::MissingEntrypoint(entrypoint_path.to_string()))?;
+        if manifest.is_wasm() {
+            if !entrypoint.starts_with(b"\0asm") {
+                return Err(PackageError::EntrypointNotWasm);
+            }
+        } else {
+            std::str::from_utf8(entrypoint).map_err(|_| PackageError::EntrypointNotUtf8)?;
+        }
         Ok(Package { manifest, files })
     }
 
     pub fn entrypoint(&self) -> &str {
-        self.files.get(&self.manifest.entrypoint).and_then(|bytes| std::str::from_utf8(bytes).ok()).unwrap_or("")
+        std::str::from_utf8(self.entrypoint_bytes()).unwrap_or("")
+    }
+
+    pub fn entrypoint_bytes(&self) -> &[u8] {
+        self.manifest.entrypoint_path().and_then(|path| self.files.get(path)).map(Vec::as_slice).unwrap_or_default()
     }
 
     /// Build a deterministic package from every regular file below `root`. Symlinks and special
@@ -183,6 +196,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+    use crate::WASM_WORLD;
 
     fn manifest(entrypoint: &str) -> String {
         serde_json::json!({
@@ -221,6 +235,35 @@ mod tests {
         let package = Package::read(&bytes).unwrap();
         assert_eq!(package.manifest.id, "org.cadcraft.example");
         assert!(package.entrypoint().contains("example:hello"));
+    }
+
+    #[test]
+    fn reads_a_schema_two_wasm_bundle() {
+        let json = serde_json::json!({
+            "schemaVersion": 2,
+            "id": "org.cadcraft.wasm-example",
+            "name": "WASM Example",
+            "version": "1.0.0",
+            "cadcraft": ">=0.7, <1",
+            "description": "A component package parser test.",
+            "license": "MIT",
+            "runtime": {
+                "kind": "wasm-component",
+                "entrypoint": "example.wasm",
+                "world": WASM_WORLD
+            },
+            "permissions": ["drawing-write"],
+            "commands": [{
+                "id": "wasmexample",
+                "label": "WASM example",
+                "function": "reference-line"
+            }]
+        })
+        .to_string();
+        let bytes = bundle(&[("extension.json", json.as_bytes()), ("example.wasm", b"\0asm\x0d\0\x01\0")]);
+        let package = Package::read(&bytes).unwrap();
+        assert!(package.manifest.is_wasm());
+        assert_eq!(package.entrypoint_bytes(), b"\0asm\x0d\0\x01\0");
     }
 
     #[test]

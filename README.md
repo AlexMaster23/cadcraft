@@ -113,7 +113,7 @@ numbers):
 | Grips | Hot grips with Space to cycle Stretch, Move, Rotate, Scale and Mirror |
 | Interface languages | English, Ukrainian (Українська), Brazilian Portuguese (Português (Brasil)), German (Deutsch), Spanish (Español), Czech (Čeština), Russian (Русский), French (Français), Simplified Chinese (简体中文, with an installed CJK font), Italian (Italiano), Korean (한국어, with an installed Hangul font), Swedish (Svenska) and Arabic (العربية, with an installed Arabic font), live switching and a remembered Auto/system-language choice; [details](docs/localization.md) |
 | Automation | MCP server, JSON control channel, `cadcraft-cli` (info, convert, run, commands, mcp) |
-| Extensions | Installable, versioned `.cadcraft-extension` packages with commands, menus and a permission-aware AutoLISP runtime; desktop manager and CLI ([developer guide](docs/extensions.md)) |
+| Extensions | Installable, versioned `.cadcraft-extension` packages with commands and menus; schema 1 AutoLISP plus a capability-based schema 2 WebAssembly component runtime, desktop manager and CLI ([developer guide](docs/extensions.md)) |
 
 ## Quick start
 
@@ -142,8 +142,8 @@ The web build: `cd apps/cadcraft-web && trunk serve` (needs [trunk](https://trun
 Desktop users install and manage extension packages from **Tools > Extensions...**. Extension
 commands work everywhere built-in commands do, including the command line, menus, scripts, MCP,
 the control channel and the CLI. Developers can start with
-[the hello example](examples/extensions/hello); the package format, lifecycle, permissions and
-packing commands are documented in [docs/extensions.md](docs/extensions.md).
+[the AutoLISP hello example](examples/extensions/hello); the package format, schema 2 WIT contract,
+lifecycle, permissions and packing commands are documented in [docs/extensions.md](docs/extensions.md).
 
 ### Fonts
 

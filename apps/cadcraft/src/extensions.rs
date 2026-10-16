@@ -12,13 +12,12 @@ fn version() -> Version {
 
 fn snapshot(store: &Store, cadcraft: &Version) -> Result<ExtensionSnapshot, String> {
     let installed = store.list(cadcraft).map_err(|error| error.to_string())?;
-    Ok(ExtensionSnapshot {
-        installed: installed.iter().map(info).collect(),
-        runtime: installed
-            .into_iter()
-            .map(|extension| cadcraft_engine::Extension::new(extension.manifest, extension.entrypoint, extension.enabled && extension.compatible))
-            .collect(),
-    })
+    let runtime = installed
+        .iter()
+        .cloned()
+        .map(|extension| cadcraft_engine::Extension::from_bytes(extension.manifest, extension.entrypoint, extension.enabled && extension.compatible))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ExtensionSnapshot { installed: installed.iter().map(info).collect(), runtime })
 }
 
 fn info(extension: &Installed) -> InstalledExtension {
@@ -35,6 +34,8 @@ fn info(extension: &Installed) -> InstalledExtension {
             .map(|permission| match permission {
                 Permission::ReadFiles => "read files",
                 Permission::WriteFiles => "write files",
+                Permission::DrawingRead => "read the active drawing",
+                Permission::DrawingWrite => "change the active drawing",
             })
             .map(str::to_string)
             .collect(),

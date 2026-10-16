@@ -5,6 +5,7 @@
 //! the command line, scripts, control channel, MCP and the UI.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use cadcraft_extensions::{Manifest, Permission};
 
@@ -13,13 +14,36 @@ use crate::{CommandInfo, EngineError, Result, Session, cmd};
 #[derive(Clone, Debug)]
 pub struct Extension {
     pub manifest: Manifest,
-    pub entrypoint: String,
+    pub(crate) program: ExtensionProgram,
     pub enabled: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ExtensionProgram {
+    AutoLisp(String),
+    WasmComponent(Arc<[u8]>),
 }
 
 impl Extension {
     pub fn new(manifest: Manifest, entrypoint: String, enabled: bool) -> Self {
-        Self { manifest, entrypoint, enabled }
+        Self { manifest, program: ExtensionProgram::AutoLisp(entrypoint), enabled }
+    }
+
+    pub fn from_bytes(manifest: Manifest, entrypoint: Vec<u8>, enabled: bool) -> std::result::Result<Self, String> {
+        manifest.validate().map_err(|error| error.to_string())?;
+        let program = if manifest.is_wasm() {
+            ExtensionProgram::WasmComponent(Arc::from(entrypoint))
+        } else {
+            ExtensionProgram::AutoLisp(String::from_utf8(entrypoint).map_err(|_| "AutoLISP extension entrypoint is not UTF-8".to_string())?)
+        };
+        Ok(Self { manifest, program, enabled })
+    }
+
+    pub(crate) fn runtime_available(&self) -> bool {
+        match self.program {
+            ExtensionProgram::AutoLisp(_) => true,
+            ExtensionProgram::WasmComponent(_) => cfg!(not(target_arch = "wasm32")),
+        }
     }
 }
 
@@ -62,6 +86,9 @@ impl Session {
         extensions.sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
         for extension in &extensions {
             extension.manifest.validate().map_err(|error| EngineError::Other(format!("extension {}: {error}", extension.manifest.id)))?;
+            if extension.manifest.is_wasm() != matches!(extension.program, ExtensionProgram::WasmComponent(_)) {
+                return Err(EngineError::Other(format!("extension {} runtime does not match its manifest", extension.manifest.id)));
+            }
             if !extension.enabled {
                 continue;
             }
@@ -102,7 +129,9 @@ impl Session {
         let mut infos: Vec<CommandInfo> = cmd::command_specs().iter().map(|command| command.info(self)).collect();
         for extension in self.extensions.entries.iter().filter(|extension| extension.enabled) {
             for command in &extension.manifest.commands {
-                let enabled = self.state().is_ok();
+                let has_document = self.state().is_ok();
+                let runtime_available = extension.runtime_available();
+                let enabled = has_document && runtime_available;
                 infos.push(CommandInfo {
                     id: command.id.clone(),
                     label: command.label.clone(),
@@ -112,7 +141,13 @@ impl Session {
                     params: command.params.clone(),
                     interactive: command.interactive,
                     enabled,
-                    disabled_reason: (!enabled).then(|| "no drawing open".into()),
+                    disabled_reason: if !has_document {
+                        Some("no drawing open".into())
+                    } else if !runtime_available {
+                        Some("WebAssembly extension runtime is unavailable in the browser".into())
+                    } else {
+                        None
+                    },
                     extension: Some(extension.manifest.id.clone()),
                 });
             }
@@ -125,7 +160,9 @@ impl Session {
             return Some(command.info(self));
         }
         let (extension, command) = self.extensions.command(id)?;
-        let enabled = self.state().is_ok();
+        let has_document = self.state().is_ok();
+        let runtime_available = extension.runtime_available();
+        let enabled = has_document && runtime_available;
         Some(CommandInfo {
             id: command.id.clone(),
             label: command.label.clone(),
@@ -135,7 +172,13 @@ impl Session {
             params: command.params.clone(),
             interactive: command.interactive,
             enabled,
-            disabled_reason: (!enabled).then(|| "no drawing open".into()),
+            disabled_reason: if !has_document {
+                Some("no drawing open".into())
+            } else if !runtime_available {
+                Some("WebAssembly extension runtime is unavailable in the browser".into())
+            } else {
+                None
+            },
             extension: Some(extension.manifest.id.clone()),
         })
     }
@@ -187,7 +230,8 @@ mod tests {
                 cadcraft: VersionReq::STAR,
                 description: "An engine extension registry test.".into(),
                 license: "MIT".into(),
-                entrypoint: "main.lsp".into(),
+                entrypoint: Some("main.lsp".into()),
+                runtime: None,
                 permissions: Vec::new(),
                 commands: vec![cadcraft_extensions::Command {
                     id: command.into(),
@@ -220,12 +264,14 @@ mod tests {
     fn programmatic_and_interactive_extension_commands_run() {
         let mut session = Session::new();
         let mut extension = extension("org.cadcraft.example", "examplecmd");
-        extension.entrypoint = r#"
+        extension.program = ExtensionProgram::AutoLisp(
+            r#"
             (defun example:run (params)
               (+ (cdr (assoc "a" params)) (cdr (assoc "b" params))))
             (defun c:examplecmd () (setq example:interactive-ran 1) (princ))
         "#
-        .into();
+            .into(),
+        );
         session.set_extensions(vec![extension]).unwrap();
 
         assert_eq!(session.execute("examplecmd", &json!({"a": 2, "b": 5})).unwrap(), json!(7));
@@ -237,7 +283,7 @@ mod tests {
     fn entrypoint_loads_in_every_drawing_and_disable_removes_commands() {
         let mut session = Session::new();
         let mut extension = extension("org.cadcraft.example", "examplecmd");
-        extension.entrypoint = "(setq example:loaded 1) (defun example:run (params) example:loaded)".into();
+        extension.program = ExtensionProgram::AutoLisp("(setq example:loaded 1) (defun example:run (params) example:loaded)".into());
         session.set_extensions(vec![extension.clone()]).unwrap();
         assert_eq!(session.execute("examplecmd", &json!(null)).unwrap(), json!(1));
 
@@ -255,7 +301,7 @@ mod tests {
         std::fs::write(&path, "test").unwrap();
         let shown = path.to_string_lossy().replace('\\', "/");
         let mut extension = extension("org.cadcraft.example", "examplecmd");
-        extension.entrypoint = format!("(defun example:run (params) (findfile \"{shown}\"))");
+        extension.program = ExtensionProgram::AutoLisp(format!("(defun example:run (params) (findfile \"{shown}\"))"));
         session.set_extensions(vec![extension.clone()]).unwrap();
         let error = session.execute("examplecmd", &json!(null)).unwrap_err().to_string();
         assert!(error.contains("read-files"), "{error}");

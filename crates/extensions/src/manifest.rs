@@ -6,16 +6,26 @@ use serde::{Deserialize, Serialize};
 
 use crate::SCHEMA_VERSION;
 
+pub const WASM_WORLD: &str = "cadcraft:extension/cadcraft-extension@0.1.0";
+
 /// A capability an extension asks the user to grant.
 ///
-/// Reading and changing the active drawing is intrinsic to an extension command. File access is
-/// separate because it crosses the drawing boundary. CADCraft's extension runtime has no process
-/// launch or network primitive in schema 1.
+/// Schema 1 AutoLISP drawing access is intrinsic. Schema 2 WebAssembly extensions must explicitly
+/// request drawing capabilities; neither runtime exposes process launch or network access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Permission {
     ReadFiles,
     WriteFiles,
+    DrawingRead,
+    DrawingWrite,
+}
+
+/// Portable executable selected by a schema 2 manifest.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Runtime {
+    WasmComponent { entrypoint: String, world: String },
 }
 
 /// One user-visible command supplied by an extension.
@@ -33,8 +43,8 @@ pub struct Command {
     /// Human-readable JSON parameter contract.
     #[serde(default)]
     pub params: String,
-    /// AutoLISP function called for a programmatic invocation. It receives one value containing
-    /// the JSON parameters and returns a value converted back to JSON.
+    /// AutoLISP function (schema 1) or guest command route (schema 2) called for a programmatic
+    /// invocation. Both receive the JSON parameters and return a JSON value.
     pub function: String,
     /// Whether `C:<id>` implements an interactive prompt flow. When false, choosing the command
     /// calls `function` with null parameters.
@@ -56,8 +66,12 @@ pub struct Manifest {
     pub description: String,
     /// SPDX license expression or identifier shown before installation.
     pub license: String,
-    /// Relative `.lsp` file loaded into every drawing while the extension is enabled.
-    pub entrypoint: String,
+    /// Relative `.lsp` file loaded into every drawing (schema 1 only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<String>,
+    /// Portable executable and WIT world (schema 2 only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<Runtime>,
     #[serde(default)]
     pub permissions: Vec<Permission>,
     #[serde(default)]
@@ -118,8 +132,8 @@ pub(crate) fn package_path(value: &str) -> bool {
 
 impl Manifest {
     pub fn validate(&self) -> Result<(), ValidationError> {
-        if self.schema_version != SCHEMA_VERSION {
-            return Err(ValidationError::new("schemaVersion", format!("expected {SCHEMA_VERSION}, got {}", self.schema_version)));
+        if !(1..=SCHEMA_VERSION).contains(&self.schema_version) {
+            return Err(ValidationError::new("schemaVersion", format!("expected 1 through {SCHEMA_VERSION}, got {}", self.schema_version)));
         }
         if self.id.len() > 128 || self.id.split('.').count() < 2 || !self.id.split('.').all(simple_component) {
             return Err(ValidationError::new("id", "must be a lower-case reverse-DNS identifier"));
@@ -135,10 +149,41 @@ impl Manifest {
         if self.license.trim().is_empty() || self.license.len() > 80 || self.license.chars().any(char::is_control) {
             return Err(ValidationError::new("license", "must be a short SPDX license identifier or expression"));
         }
-        if !package_path(&self.entrypoint) || !self.entrypoint.to_ascii_lowercase().ends_with(".lsp") {
-            return Err(ValidationError::new("entrypoint", "must be a portable relative .lsp path"));
+        match self.schema_version {
+            1 => {
+                let entrypoint = self.entrypoint.as_deref().ok_or_else(|| ValidationError::new("entrypoint", "is required by schema 1"))?;
+                if !package_path(entrypoint) || !entrypoint.to_ascii_lowercase().ends_with(".lsp") {
+                    return Err(ValidationError::new("entrypoint", "must be a portable relative .lsp path"));
+                }
+                if self.runtime.is_some() {
+                    return Err(ValidationError::new("runtime", "is available only in schema 2"));
+                }
+                if self.permissions.iter().any(|permission| matches!(permission, Permission::DrawingRead | Permission::DrawingWrite)) {
+                    return Err(ValidationError::new("permissions", "schema 1 does not declare drawing permissions"));
+                }
+            }
+            2 => {
+                if self.entrypoint.is_some() {
+                    return Err(ValidationError::new("entrypoint", "schema 2 declares its entrypoint inside runtime"));
+                }
+                let runtime = self.runtime.as_ref().ok_or_else(|| ValidationError::new("runtime", "is required by schema 2"))?;
+                match runtime {
+                    Runtime::WasmComponent { entrypoint, world } => {
+                        if !package_path(entrypoint) || !entrypoint.to_ascii_lowercase().ends_with(".wasm") {
+                            return Err(ValidationError::new("runtime.entrypoint", "must be a portable relative .wasm path"));
+                        }
+                        if world != WASM_WORLD {
+                            return Err(ValidationError::new("runtime.world", format!("must be `{WASM_WORLD}`")));
+                        }
+                    }
+                }
+                if self.permissions.iter().any(|permission| matches!(permission, Permission::ReadFiles | Permission::WriteFiles)) {
+                    return Err(ValidationError::new("permissions", "schema 2 does not expose file-system capabilities"));
+                }
+            }
+            _ => return Err(ValidationError::new("schemaVersion", "is unsupported")),
         }
-        if self.permissions.len() > 2 || self.permissions.iter().copied().collect::<HashSet<_>>().len() != self.permissions.len() {
+        if self.permissions.len() > 4 || self.permissions.iter().copied().collect::<HashSet<_>>().len() != self.permissions.len() {
             return Err(ValidationError::new("permissions", "contains a duplicate or unsupported permission"));
         }
         if self.commands.is_empty() || self.commands.len() > 256 {
@@ -174,8 +219,13 @@ impl Manifest {
             if command.params.len() > 2_000 || command.params.chars().any(char::is_control) {
                 return Err(ValidationError::new(format!("{base}.params"), "must contain at most 2000 printable characters"));
             }
-            if !lisp_symbol(&command.function) {
-                return Err(ValidationError::new(format!("{base}.function"), "must be an AutoLISP symbol name"));
+            let function_is_valid = if self.schema_version == 1 { lisp_symbol(&command.function) } else { command_name(&command.function) };
+            if !function_is_valid {
+                let expected = if self.schema_version == 1 { "an AutoLISP symbol name" } else { "a lower-case guest command route" };
+                return Err(ValidationError::new(format!("{base}.function"), format!("must be {expected}")));
+            }
+            if self.schema_version == 2 && command.interactive {
+                return Err(ValidationError::new(format!("{base}.interactive"), "schema 2 commands are programmatic in this release"));
             }
         }
         if let Some(homepage) = &self.homepage
@@ -188,6 +238,18 @@ impl Manifest {
 
     pub fn supports(&self, cadcraft_version: &Version) -> bool {
         self.cadcraft.matches(cadcraft_version)
+    }
+
+    pub fn entrypoint_path(&self) -> Option<&str> {
+        match (&self.entrypoint, &self.runtime) {
+            (Some(path), None) => Some(path),
+            (None, Some(Runtime::WasmComponent { entrypoint, .. })) => Some(entrypoint),
+            _ => None,
+        }
+    }
+
+    pub fn is_wasm(&self) -> bool {
+        matches!(self.runtime, Some(Runtime::WasmComponent { .. }))
     }
 }
 
@@ -204,7 +266,8 @@ mod tests {
             cadcraft: VersionReq::parse(">=0.7, <1").unwrap(),
             description: "A small extension used by the tests.".into(),
             license: "MIT".into(),
-            entrypoint: "main.lsp".into(),
+            entrypoint: Some("main.lsp".into()),
+            runtime: None,
             permissions: vec![],
             commands: vec![Command {
                 id: "examplehello".into(),
@@ -231,11 +294,25 @@ mod tests {
     fn rejects_paths_and_duplicate_commands() {
         for path in ["../main.lsp", "/main.lsp", "dir\\main.lsp", "main.txt"] {
             let mut manifest = good();
-            manifest.entrypoint = path.into();
+            manifest.entrypoint = Some(path.into());
             assert!(manifest.validate().is_err(), "{path}");
         }
         let mut manifest = good();
         manifest.commands.push(manifest.commands[0].clone());
         assert!(manifest.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_a_schema_two_wasm_component() {
+        let mut manifest = good();
+        manifest.schema_version = 2;
+        manifest.entrypoint = None;
+        manifest.runtime = Some(Runtime::WasmComponent { entrypoint: "surveycraft.wasm".into(), world: WASM_WORLD.into() });
+        manifest.permissions = vec![Permission::DrawingRead, Permission::DrawingWrite];
+        manifest.commands[0].function = "reference-line".into();
+        manifest.commands[0].interactive = false;
+        assert!(manifest.validate().is_ok());
+        assert_eq!(manifest.entrypoint_path(), Some("surveycraft.wasm"));
+        assert!(manifest.is_wasm());
     }
 }

@@ -63,7 +63,12 @@ impl Session {
             .extensions()
             .iter()
             .filter(|extension| extension.enabled && !self.lisp.extension_loaded.contains(&(uid, extension.manifest.id.clone())))
-            .map(|extension| (extension.manifest.id.clone(), extension.manifest.entrypoint.clone(), extension.entrypoint.clone()))
+            .filter_map(|extension| {
+                let crate::extensions::ExtensionProgram::AutoLisp(source) = &extension.program else {
+                    return None;
+                };
+                Some((extension.manifest.id.clone(), extension.manifest.entrypoint_path()?.to_string(), source.clone()))
+            })
             .collect();
         for (id, entrypoint, source) in pending {
             self.lisp.extension_loaded.insert((uid, id.clone()));

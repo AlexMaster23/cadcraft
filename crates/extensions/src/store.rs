@@ -10,7 +10,7 @@ use crate::{MAX_FILE_BYTES, Manifest, Package, PackageError};
 
 const MANIFEST: &str = "extension.json";
 const DISABLED: &str = ".cadcraft-disabled";
-const MAX_ARCHIVE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_ARCHIVE_BYTES: u64 = 72 * 1024 * 1024;
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
@@ -18,7 +18,7 @@ pub struct Installed {
     pub manifest: Manifest,
     pub enabled: bool,
     pub compatible: bool,
-    pub entrypoint: String,
+    pub entrypoint: Vec<u8>,
     pub directory: PathBuf,
 }
 
@@ -249,9 +249,18 @@ fn read_installed(path: &Path, directory_name: &str, cadcraft_version: &Version)
     if manifest.id != directory_name {
         return Err(StoreError::InvalidInstalled { path: path.to_path_buf(), message: "manifest id does not match its directory".into() });
     }
-    let entry_path = path.join(&manifest.entrypoint);
-    let entrypoint = String::from_utf8(bounded_file(&entry_path, MAX_FILE_BYTES)?)
-        .map_err(|_| StoreError::InvalidInstalled { path: entry_path, message: "entrypoint is not UTF-8".into() })?;
+    let relative_entrypoint = manifest
+        .entrypoint_path()
+        .ok_or_else(|| StoreError::InvalidInstalled { path: path.to_path_buf(), message: "entrypoint is not defined".into() })?;
+    let entry_path = path.join(relative_entrypoint);
+    let entrypoint = bounded_file(&entry_path, MAX_FILE_BYTES)?;
+    if manifest.is_wasm() {
+        if !entrypoint.starts_with(b"\0asm") {
+            return Err(StoreError::InvalidInstalled { path: entry_path, message: "entrypoint is not WebAssembly".into() });
+        }
+    } else if std::str::from_utf8(&entrypoint).is_err() {
+        return Err(StoreError::InvalidInstalled { path: entry_path, message: "entrypoint is not UTF-8".into() });
+    }
     Ok(Installed {
         compatible: manifest.supports(cadcraft_version),
         enabled: !path.join(DISABLED).exists(),

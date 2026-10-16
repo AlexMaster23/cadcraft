@@ -1,0 +1,38 @@
+package cadcraft:extension@0.1.0;
+
+interface geometry {
+  record point3 {
+    x: f64,
+    y: f64,
+    z: f64,
+  }
+
+  record line-request {
+    start: point3,
+    end: point3,
+    layer: string,
+  }
+}
+
+interface drawing {
+  use geometry.{line-request};
+
+  type transaction-id = u64;
+  type entity-id = u64;
+
+  variant host-error {
+    invalid-input(string),
+    permission-denied(string),
+    drawing-failure(string),
+  }
+
+  begin-transaction: func(label: string) -> result<transaction-id, host-error>;
+  create-line: func(transaction: transaction-id, request: line-request) -> result<entity-id, host-error>;
+  commit-transaction: func(transaction: transaction-id) -> result<_, host-error>;
+  rollback-transaction: func(transaction: transaction-id) -> result<_, host-error>;
+}
+
+world cadcraft-extension {
+  import drawing;
+  export run-command: func(command: string, parameters-json: string) -> result<string, string>;
+}

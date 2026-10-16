@@ -211,14 +211,11 @@ fn load_extensions(session: &mut Session) -> Result<(), String> {
     let Some(root) = config_dir() else { return Ok(()) };
     let version = semver::Version::parse(env!("CARGO_PKG_VERSION")).map_err(|error| error.to_string())?;
     let installed = cadcraft_extensions::Store::new(root.join("extensions")).list(&version).map_err(|error| error.to_string())?;
-    session
-        .set_extensions(
-            installed
-                .into_iter()
-                .map(|extension| cadcraft_engine::Extension::new(extension.manifest, extension.entrypoint, extension.enabled && extension.compatible))
-                .collect(),
-        )
-        .map_err(|error| error.to_string())
+    let extensions = installed
+        .into_iter()
+        .map(|extension| cadcraft_engine::Extension::from_bytes(extension.manifest, extension.entrypoint, extension.enabled && extension.compatible))
+        .collect::<Result<Vec<_>, _>>()?;
+    session.set_extensions(extensions).map_err(|error| error.to_string())
 }
 
 fn extensions(args: &[String]) -> Result<(), String> {

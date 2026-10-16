@@ -30,6 +30,8 @@ pub mod spatial;
 pub mod sysvars;
 pub mod undoctl;
 pub mod units;
+#[cfg(not(target_arch = "wasm32"))]
+mod wasm_runtime;
 
 use std::sync::Arc;
 
@@ -874,7 +876,22 @@ impl Session {
                 let extension_id = extension.manifest.id.clone();
                 let function = command.function.clone();
                 let command_id = command.id.clone();
-                return self.lisp_execute_extension(&extension_id, &function, &command_id, params);
+                let program = extension.program.clone();
+                let permissions = extension.manifest.permissions.clone();
+                return match program {
+                    extensions::ExtensionProgram::AutoLisp(_) => self.lisp_execute_extension(&extension_id, &function, &command_id, params),
+                    extensions::ExtensionProgram::WasmComponent(bytes) => {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            self.wasm_execute_extension(&bytes, &function, params, &permissions)
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            let _ = (bytes, function, params, permissions);
+                            Err(EngineError::Disabled(command_id, "WebAssembly extension runtime is unavailable in the browser".into()))
+                        }
+                    }
+                };
             }
         };
         (spec.enabled)(self).map_err(|m| EngineError::Disabled(spec.id.into(), m))?;

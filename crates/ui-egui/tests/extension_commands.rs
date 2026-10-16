@@ -15,7 +15,8 @@ fn app() -> CadApp {
                 cadcraft: VersionReq::STAR,
                 description: "Tests extension command discovery.".into(),
                 license: "MIT".into(),
-                entrypoint: "main.lsp".into(),
+                entrypoint: Some("main.lsp".into()),
+                runtime: None,
                 permissions: Vec::new(),
                 commands: vec![Command {
                     id: "menutest".into(),
