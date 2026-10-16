@@ -3,7 +3,7 @@ use cadcraft_extensions::{
     Command, CommandUi, Manifest, TableColumn, TableColumnKind, TableSelect, TableSelectChoice, Toolset, ToolsetIcon, ToolsetPosition, ToolsetSize,
     ToolsetTab, ToolsetTool,
 };
-use cadcraft_ui_egui::{CadApp, Services, control, menus};
+use cadcraft_ui_egui::{CadApp, LoadedTextTable, Services, control, menus};
 use egui::vec2;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -154,6 +154,9 @@ fn extension_commands_reach_tool_sets_and_keep_their_human_ui() {
 #[test]
 fn extension_table_renders_its_declared_selector() {
     let mut app = app();
+    app.services.pick_extension_table = Some(Box::new(|| {
+        Ok(Some(LoadedTextTable { name: "points.csv".into(), text: "Point,X,Y,Z,Description\n201,500000.25,300000.5,100.125,STN\n".into() }))
+    }));
     app.start("ZXQMENU");
     let directory = std::env::var_os("CADCRAFT_EXTENSION_TABLE_SHOTS").map(std::path::PathBuf::from);
     let builder = Harness::builder().with_size(vec2(980.0, 620.0));
@@ -168,6 +171,9 @@ fn extension_table_renders_its_declared_selector() {
     harness.run_steps(3);
 
     assert!(harness.query_by_label("Coordinate convention").is_some());
+    harness.get_by_label("Open CSV / text...").click();
+    harness.run_steps(3);
+    assert!(harness.query_by_label("1 point ready").is_some());
     if let Some(directory) = directory {
         std::fs::create_dir_all(&directory).unwrap();
         harness.render().unwrap().save(directory.join("extension-table-selector.png")).unwrap();

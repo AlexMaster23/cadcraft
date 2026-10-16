@@ -156,7 +156,10 @@ fn table_ui(ui: &mut egui::Ui, state: &mut State, action: &mut Option<Action>) {
     let error_color = ui.visuals().error_fg_color;
     let mut changed_last = false;
     egui::ScrollArea::both().max_height(290.0).auto_shrink([false, false]).show(ui, |ui| {
-        egui::Grid::new("extension-table-grid").striped(true).spacing(vec2(8.0, 5.0)).show(ui, |ui| {
+        // A striped row can have the same fill as text fields in the dark theme, making populated
+        // editors merge into one solid band. A uniform table background keeps every cell visibly
+        // boxed, whether it is empty or already contains imported data.
+        egui::Grid::new("extension-table-grid").spacing(vec2(8.0, 5.0)).show(ui, |ui| {
             ui.strong("");
             ui.strong("#");
             for column in &state.columns {
