@@ -1,6 +1,12 @@
 use cadcraft_engine::{Extension, Session};
-use cadcraft_extensions::{Command, CommandUi, Manifest, TableColumn, TableColumnKind};
+use cadcraft_extensions::{
+    Command, CommandUi, Manifest, TableColumn, TableColumnKind, TableSelect, TableSelectChoice, Toolset, ToolsetIcon, ToolsetPosition, ToolsetSize,
+    ToolsetTab, ToolsetTool,
+};
 use cadcraft_ui_egui::{CadApp, Services, control, menus};
+use egui::vec2;
+use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use semver::{Version, VersionReq};
 use serde_json::json;
 
@@ -32,15 +38,65 @@ fn app() -> CadApp {
                         description: "Type points or open a CSV file.".into(),
                         submit_label: "Insert points".into(),
                         accent: Some("#F47C20".into()),
-                        columns: vec![TableColumn {
-                            key: "number".into(),
-                            label: "Point number".into(),
-                            kind: TableColumnKind::Text,
-                            required: true,
-                            unique: true,
-                            aliases: vec!["point".into()],
+                        selects: vec![TableSelect {
+                            key: "convention".into(),
+                            label: "Coordinate convention".into(),
+                            default: "cad-xy".into(),
+                            choices: vec![
+                                TableSelectChoice { value: "cad-xy".into(), label: "CAD / GIS X-Y".into() },
+                                TableSelectChoice { value: "survey-xy".into(), label: "Survey / TopoLT X-Y".into() },
+                            ],
                         }],
+                        columns: vec![
+                            TableColumn {
+                                key: "number".into(),
+                                label: "Point number".into(),
+                                kind: TableColumnKind::Text,
+                                required: true,
+                                unique: true,
+                                aliases: vec!["point".into()],
+                            },
+                            TableColumn {
+                                key: "x".into(),
+                                label: "Input X".into(),
+                                kind: TableColumnKind::Number,
+                                required: true,
+                                unique: false,
+                                aliases: vec!["easting".into()],
+                            },
+                            TableColumn {
+                                key: "y".into(),
+                                label: "Input Y".into(),
+                                kind: TableColumnKind::Number,
+                                required: true,
+                                unique: false,
+                                aliases: vec!["northing".into()],
+                            },
+                            TableColumn {
+                                key: "elevation".into(),
+                                label: "Elevation (Z)".into(),
+                                kind: TableColumnKind::Number,
+                                required: true,
+                                unique: false,
+                                aliases: vec!["z".into()],
+                            },
+                            TableColumn {
+                                key: "code".into(),
+                                label: "Code / description".into(),
+                                kind: TableColumnKind::Text,
+                                required: false,
+                                unique: false,
+                                aliases: vec!["description".into()],
+                            },
+                        ],
                     }),
+                }],
+                toolsets: vec![Toolset {
+                    tab: ToolsetTab::Drafting,
+                    group: "Survey tools".into(),
+                    position: ToolsetPosition::Top,
+                    accent: Some("#F47A20".into()),
+                    tools: vec![ToolsetTool { command: "menutest".into(), icon: ToolsetIcon::Import, size: ToolsetSize::Large }],
                 }],
                 homepage: None,
             },
@@ -76,4 +132,44 @@ fn extension_commands_reach_menus_and_control_catalog() {
                 && item.get("extension").and_then(serde_json::Value::as_str) == Some("org.cadcraft.menu-test")
         })
     }));
+}
+
+#[test]
+fn extension_commands_reach_tool_sets_and_keep_their_human_ui() {
+    let mut harness = Harness::builder().with_size(vec2(360.0, 1600.0)).build_ui_state(
+        |ui, app: &mut CadApp| {
+            app.logic(&ui.ctx().clone());
+            cadcraft_ui_egui::palettes::toolsets(app, ui);
+        },
+        app(),
+    );
+    harness.run_steps(5);
+
+    assert!(harness.query_by_label("Survey tools").is_some());
+    harness.get_by_label("Extension Menu Test").click();
+    harness.run_steps(3);
+    assert_eq!(harness.state().ui.dialog.as_deref(), Some("extension-table"));
+}
+
+#[test]
+fn extension_table_renders_its_declared_selector() {
+    let mut app = app();
+    app.start("ZXQMENU");
+    let directory = std::env::var_os("CADCRAFT_EXTENSION_TABLE_SHOTS").map(std::path::PathBuf::from);
+    let builder = Harness::builder().with_size(vec2(980.0, 620.0));
+    let builder = if directory.is_some() { builder.wgpu() } else { builder };
+    let mut harness = builder.build_ui_state(
+        |ui, app: &mut CadApp| {
+            let mut open = true;
+            cadcraft_ui_egui::extension_table::dialog(app, ui.ctx(), &mut open);
+        },
+        app,
+    );
+    harness.run_steps(3);
+
+    assert!(harness.query_by_label("Coordinate convention").is_some());
+    if let Some(directory) = directory {
+        std::fs::create_dir_all(&directory).unwrap();
+        harness.render().unwrap().save(directory.join("extension-table-selector.png")).unwrap();
+    }
 }

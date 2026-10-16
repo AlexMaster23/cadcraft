@@ -113,7 +113,7 @@ numbers):
 | Grips | Hot grips with Space to cycle Stretch, Move, Rotate, Scale and Mirror |
 | Interface languages | English, Ukrainian (Українська), Brazilian Portuguese (Português (Brasil)), German (Deutsch), Spanish (Español), Czech (Čeština), Russian (Русский), French (Français), Simplified Chinese (简体中文, with an installed CJK font), Italian (Italiano), Korean (한국어, with an installed Hangul font), Swedish (Svenska) and Arabic (العربية, with an installed Arabic font), live switching and a remembered Auto/system-language choice; [details](docs/localization.md) |
 | Automation | MCP server, JSON control channel, `cadcraft-cli` (info, convert, run, commands, mcp) |
-| Extensions | Installable, versioned `.cadcraft-extension` packages with commands and menus; schema 1 AutoLISP plus a capability-based schema 2 WebAssembly component runtime, host-rendered data-entry tables, desktop manager and CLI ([developer guide](docs/extensions.md)) |
+| Extensions | Installable, versioned `.cadcraft-extension` packages with commands, menus and native Tool Sets groups; schema 1 AutoLISP plus a capability-based schema 2 WebAssembly component runtime, host-rendered data-entry tables, desktop manager and CLI ([developer guide](docs/extensions.md)) |
 
 ## Quick start
 

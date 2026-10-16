@@ -154,6 +154,17 @@ the window; the extension supplies only bounded labels, columns and validation m
     "description": "Enter rows or open a coordinate file, then review them before insertion.",
     "submitLabel": "Insert points",
     "accent": "#F47C20",
+    "selects": [
+      {
+        "key": "convention",
+        "label": "Coordinate convention",
+        "default": "cad-xy",
+        "choices": [
+          { "value": "cad-xy", "label": "CAD / GIS X-Y" },
+          { "value": "survey-xy", "label": "Survey X-Y" }
+        ]
+      }
+    ],
     "columns": [
       {
         "key": "number",
@@ -179,16 +190,60 @@ the window; the extension supplies only bounded labels, columns and validation m
 unique and become keys in the submitted JSON row. `aliases` are case-insensitive CSV header names.
 The optional accent is a `#RRGGBB` color. Manifests may declare 1–12 columns.
 
+`selects` is optional and may contain up to eight host-rendered drop-downs. Every selector has
+2–16 bounded choices and a default that matches one choice value. Selector keys are unique and
+cannot be `rows`; the selected values become top-level fields in the submitted JSON. This lets an
+extension ask for conventions, units or import modes without running extension-owned UI code.
+
 A menu, toolbar or typed-command invocation opens the table. Rows can be entered manually or
 loaded from a user-selected UTF-8 CSV/text file; comma, semicolon and tab delimiters are supported.
 CADCraft limits input to 2,000 rows, 64 KiB per field and 8 MiB per selected file. Only validated
-non-empty rows are submitted as `{"rows":[...]}`. Programmatic invocation through `CadApp::run`,
+non-empty rows are submitted as `{"convention":"cad-xy","rows":[...]}` when the example selector
+is present, or `{"rows":[...]}` when there are no selectors. Programmatic invocation through `CadApp::run`,
 the control channel or CLI remains dialog-free and passes the caller's JSON directly to the guest.
 
 File selection is a host action: a schema 2 guest receives only the submitted JSON and gains no
 ambient file-system access. Declarative tables are intentionally narrower than arbitrary
 extension-owned windows; future UI kinds can extend the versioned manifest without allowing guest
 code to run inside the renderer.
+
+## Tool Sets contributions
+
+An extension can place its declared commands in bounded, host-rendered groups on CADCraft's
+Drafting or Modeling Tool Sets tab. The buttons start the exact same command used by menus, typed
+aliases, scripts and automation:
+
+```json
+{
+  "toolsets": [
+    {
+      "tab": "drafting",
+      "group": "Survey tools",
+      "position": "top",
+      "accent": "#F47A20",
+      "tools": [
+        {
+          "command": "survey.points.import",
+          "icon": "import",
+          "size": "large"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`tab` is `drafting` or `modeling`; `position` is `top` or `bottom` and defaults to `bottom`.
+`size` is `large` or `small` and defaults to `large`. Every `command` must be declared by the same
+extension and may be placed only once. A manifest may declare at most 16 groups and 32 tools per
+group. The optional accent is a `#RRGGBB` color used for a small native group/button marker.
+
+Icons are original CADCraft artwork selected by semantic name: `new`, `open`, `save`, `import`,
+`export`, `attach`, `share`, `properties`, `layers`, `line`, `polyline`, `circle`, `arc`,
+`rectangle`, `polygon`, `ellipse`, `spline`, `point`, `hatch`, `region`, `table`, `text`, `move`,
+`copy`, `rotate` or `settings`. Extensions do not inject arbitrary drawing or UI code into the
+palette. Users can collapse an extension group and use its gear menu to hide, restore or show its
+buttons exactly like built-in Tool Sets groups.
 
 ## Permissions and trust
 

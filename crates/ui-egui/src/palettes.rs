@@ -2,6 +2,7 @@
 
 use cadcraft_color::Color;
 use cadcraft_doc::EntityKind;
+use cadcraft_extensions::{ToolsetIcon, ToolsetPosition, ToolsetSize, ToolsetTab};
 use egui::{Color32, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::{Value, json};
 
@@ -124,8 +125,134 @@ fn command_known(id: &str) -> bool {
     cadcraft_engine::find_command(id).is_some() || crate::menus::is_ui_command(id)
 }
 
+#[derive(Clone)]
+struct PaletteTool {
+    icon: Icon,
+    command: String,
+    label: String,
+    large: bool,
+    enabled: bool,
+}
+
+struct PaletteGroup {
+    key: String,
+    label: String,
+    accent: Option<Color32>,
+    tools: Vec<PaletteTool>,
+}
+
+fn extension_icon(icon: ToolsetIcon) -> Icon {
+    match icon {
+        ToolsetIcon::New => Icon::New,
+        ToolsetIcon::Open => Icon::Open,
+        ToolsetIcon::Save => Icon::Save,
+        ToolsetIcon::Import => Icon::Import,
+        ToolsetIcon::Export => Icon::Export,
+        ToolsetIcon::Attach => Icon::Attach,
+        ToolsetIcon::Share => Icon::Share,
+        ToolsetIcon::Properties => Icon::Properties,
+        ToolsetIcon::Layers => Icon::Layers,
+        ToolsetIcon::Line => Icon::Line,
+        ToolsetIcon::Polyline => Icon::Polyline,
+        ToolsetIcon::Circle => Icon::Circle,
+        ToolsetIcon::Arc => Icon::Arc,
+        ToolsetIcon::Rectangle => Icon::Rectangle,
+        ToolsetIcon::Polygon => Icon::Polygon,
+        ToolsetIcon::Ellipse => Icon::Ellipse,
+        ToolsetIcon::Spline => Icon::Spline,
+        ToolsetIcon::Point => Icon::Point,
+        ToolsetIcon::Hatch => Icon::Hatch,
+        ToolsetIcon::Region => Icon::Region,
+        ToolsetIcon::Table => Icon::Table,
+        ToolsetIcon::Text => Icon::Text,
+        ToolsetIcon::Move => Icon::Move,
+        ToolsetIcon::Copy => Icon::Copy,
+        ToolsetIcon::Rotate => Icon::Rotate,
+        ToolsetIcon::Settings => Icon::Gear,
+    }
+}
+
+fn accent_color(value: Option<&str>) -> Option<Color32> {
+    let value = value?;
+    let red = u8::from_str_radix(value.get(1..3)?, 16).ok()?;
+    let green = u8::from_str_radix(value.get(3..5)?, 16).ok()?;
+    let blue = u8::from_str_radix(value.get(5..7)?, 16).ok()?;
+    Some(Color32::from_rgb(red, green, blue))
+}
+
+fn palette_groups(app: &CadApp) -> Vec<PaletteGroup> {
+    let mut groups = Vec::new();
+    let mut top_groups = Vec::new();
+    let mut bottom_groups = Vec::new();
+    let builtins: &[(&str, &[Tool], &[Tool])] = if app.ui.toolset_tab == "Drafting" { DRAFTING } else { MODELING };
+    for (name, large, small) in builtins {
+        let tools = large
+            .iter()
+            .map(|(icon, command, label)| PaletteTool {
+                icon: *icon,
+                command: (*command).into(),
+                label: (*label).into(),
+                large: true,
+                enabled: command_known(command),
+            })
+            .chain(small.iter().map(|(icon, command, label)| PaletteTool {
+                icon: *icon,
+                command: (*command).into(),
+                label: (*label).into(),
+                large: false,
+                enabled: command_known(command),
+            }))
+            .collect();
+        groups.push(PaletteGroup { key: (*name).into(), label: (*name).into(), accent: None, tools });
+    }
+
+    let active_tab = if app.ui.toolset_tab == "Drafting" { ToolsetTab::Drafting } else { ToolsetTab::Modeling };
+    let active_tab_key = if active_tab == ToolsetTab::Drafting { "drafting" } else { "modeling" };
+    for extension in app.session.extensions().iter().filter(|extension| extension.enabled) {
+        for contribution in extension.manifest.toolsets.iter().filter(|toolset| toolset.tab == active_tab) {
+            let tools = contribution
+                .tools
+                .iter()
+                .filter_map(|tool| {
+                    let command = extension.manifest.commands.iter().find(|command| command.id.eq_ignore_ascii_case(&tool.command))?;
+                    let enabled = app.session.command_info(&command.id).is_some_and(|info| info.enabled);
+                    Some(PaletteTool {
+                        icon: extension_icon(tool.icon),
+                        command: command.id.clone(),
+                        label: command.label.clone(),
+                        large: tool.size == ToolsetSize::Large,
+                        enabled,
+                    })
+                })
+                .collect();
+            let group = PaletteGroup {
+                key: format!("extension:{}:{active_tab_key}:{}", extension.manifest.id, contribution.group),
+                label: contribution.group.clone(),
+                accent: accent_color(contribution.accent.as_deref()),
+                tools,
+            };
+            match contribution.position {
+                ToolsetPosition::Top => top_groups.push(group),
+                ToolsetPosition::Bottom => bottom_groups.push(group),
+            }
+        }
+    }
+    top_groups.append(&mut groups);
+    top_groups.append(&mut bottom_groups);
+    top_groups
+}
+
+fn palette_button(ui: &mut egui::Ui, tool: &PaletteTool, size: f32, accent: Option<Color32>) -> egui::Response {
+    let response = icons::button(ui, tool.icon, size, &tool.label, false);
+    if let Some(accent) = accent {
+        ui.painter().hline(response.rect.x_range().shrink(4.0), response.rect.bottom() - 1.0, Stroke::new(2.0, accent));
+    }
+    response
+}
+
 pub fn toolsets(app: &mut CadApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
+    let groups = palette_groups(app);
     egui::Frame::NONE.fill(t.panel).show(ui, |ui| {
         let r = ui.max_rect();
         let p = ui.painter().clone();
@@ -160,16 +287,15 @@ pub fn toolsets(app: &mut CadApp, ui: &mut egui::Ui) {
             app.ui.show_toolsets = false;
         }
         let body = Rect::from_min_max(pos2(r.left(), r.top() + tab_h), r.max);
-        let mut clicked: Option<&'static str> = None;
+        let mut clicked: Option<String> = None;
         let mut toggle_group = None;
         let mut tool_visible: Option<(String, bool)> = None;
         let mut restore: Vec<String> = Vec::new();
         ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                let groups: &[(&str, &[Tool], &[Tool])] = if app.ui.toolset_tab == "Drafting" { DRAFTING } else { MODELING };
-                for (name, large, small) in groups {
-                    let collapsed = app.ui.collapsed_groups.iter().any(|g| g == name);
+                for group in &groups {
+                    let collapsed = app.ui.collapsed_groups.iter().any(|key| key == &group.key);
                     // Header.
                     let (hr, hresp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
                     let pp = ui.painter();
@@ -179,65 +305,68 @@ pub fn toolsets(app: &mut CadApp, ui: &mut egui::Ui) {
                         if collapsed { Icon::ChevronRight } else { Icon::ChevronDown },
                         false,
                     );
+                    if let Some(accent) = group.accent {
+                        pp.rect_filled(Rect::from_center_size(pos2(hr.left() + 22.0, hr.center().y), vec2(3.0, 13.0)), 1.5, accent);
+                    }
                     pp.text(
-                        pos2(hr.left() + 22.0, hr.center().y),
+                        pos2(hr.left() + if group.accent.is_some() { 29.0 } else { 22.0 }, hr.center().y),
                         egui::Align2::LEFT_CENTER,
-                        crate::i18n::t(name),
+                        crate::i18n::t(&group.label),
                         egui::FontId::proportional(12.5),
                         t.text,
                     );
                     let gear = Rect::from_center_size(pos2(hr.right() - 12.0, hr.center().y), vec2(13.0, 13.0));
-                    let gresp = ui.interact(gear, ui.id().with(("ts_gear", name)), Sense::click());
+                    let gresp = ui.interact(gear, ui.id().with(("ts_gear", &group.key)), Sense::click());
                     icons::paint(pp, Rect::from_center_size(gear.center(), vec2(11.0, 11.0)), Icon::Gear, false);
-                    icons::describe_control(ui, &hresp, name, Some(!collapsed), false);
-                    icons::describe_control(ui, &gresp, &format!("{name} options"), None, false);
+                    icons::describe_control(ui, &hresp, &group.label, Some(!collapsed), false);
+                    icons::describe_control(ui, &gresp, &format!("{} options", group.label), None, false);
                     let gresp = gresp.on_hover_text(crate::tl!("Show and hide the tools of this category"));
                     if hresp.clicked() {
-                        toggle_group = Some(name.to_string());
+                        toggle_group = Some(group.key.clone());
                     }
                     let hidden = |cmd: &str| app.ui.hidden_tools.iter().any(|h| h == cmd);
                     egui::Popup::from_toggle_button_response(&gresp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
                         ui.label(crate::tl!("Show in Tool Sets"));
-                        for (_, cmd, tip) in large.iter().chain(small.iter()) {
-                            let mut shown = !hidden(cmd);
-                            if ui.checkbox(&mut shown, *tip).changed() {
-                                tool_visible = Some((cmd.to_string(), shown));
+                        for tool in &group.tools {
+                            let mut shown = !hidden(&tool.command);
+                            if ui.checkbox(&mut shown, &tool.label).changed() {
+                                tool_visible = Some((tool.command.clone(), shown));
                             }
                         }
                         if ui.selectable_label(false, crate::tl!("Show All")).clicked() {
-                            restore = large.iter().chain(small.iter()).map(|(_, cmd, _)| cmd.to_string()).collect();
+                            restore = group.tools.iter().map(|tool| tool.command.clone()).collect();
                         }
                     });
                     if !collapsed {
                         ui.add_space(4.0);
                         // Large icons.
-                        if !large.is_empty() {
+                        if group.tools.iter().any(|tool| tool.large && !hidden(&tool.command)) {
                             ui.horizontal(|ui| {
                                 ui.add_space(8.0);
                                 ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
-                                for (icon, cmd, tip) in large.iter() {
-                                    if hidden(cmd) {
+                                for tool in group.tools.iter().filter(|tool| tool.large) {
+                                    if hidden(&tool.command) {
                                         continue;
                                     }
-                                    ui.add_enabled_ui(command_known(cmd), |ui| {
-                                        if icons::button(ui, *icon, 40.0, tip, false).clicked() {
-                                            clicked = Some(cmd);
+                                    ui.add_enabled_ui(tool.enabled, |ui| {
+                                        if palette_button(ui, tool, 40.0, group.accent).clicked() {
+                                            clicked = Some(tool.command.clone());
                                         }
                                     });
                                 }
                             });
                         }
                         // Small icons, 8 per row.
-                        let visible: Vec<Tool> = small.iter().copied().filter(|(_, cmd, _)| !hidden(cmd)).collect();
+                        let visible: Vec<&PaletteTool> = group.tools.iter().filter(|tool| !tool.large && !hidden(&tool.command)).collect();
                         for row in visible.chunks(8) {
                             ui.add_space(2.0);
                             ui.horizontal(|ui| {
                                 ui.add_space(8.0);
                                 ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
-                                for (icon, cmd, tip) in row.iter() {
-                                    ui.add_enabled_ui(command_known(cmd), |ui| {
-                                        if icons::button(ui, *icon, 23.0, tip, false).clicked() {
-                                            clicked = Some(cmd);
+                                for tool in row.iter() {
+                                    ui.add_enabled_ui(tool.enabled, |ui| {
+                                        if palette_button(ui, tool, 23.0, group.accent).clicked() {
+                                            clicked = Some(tool.command.clone());
                                         }
                                     });
                                 }
@@ -269,7 +398,7 @@ pub fn toolsets(app: &mut CadApp, ui: &mut egui::Ui) {
         }
         if let Some(c) = clicked {
             app.cmd.buffer.clear();
-            app.start(c);
+            app.start(&c);
         }
     });
 }

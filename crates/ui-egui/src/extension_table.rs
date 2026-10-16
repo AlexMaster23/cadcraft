@@ -6,7 +6,7 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use cadcraft_extensions::{CommandUi, TableColumn, TableColumnKind};
+use cadcraft_extensions::{CommandUi, TableColumn, TableColumnKind, TableSelect};
 use csv::{ReaderBuilder, Trim};
 use egui::{Color32, RichText, vec2};
 use serde_json::{Map, Value};
@@ -20,6 +20,12 @@ const MAX_FIELD_BYTES: usize = 64 * 1024;
 struct Row {
     selected: bool,
     values: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct SelectState {
+    spec: TableSelect,
+    value: String,
 }
 
 impl Row {
@@ -41,6 +47,7 @@ pub struct State {
     description: String,
     submit_label: String,
     accent: Option<String>,
+    selects: Vec<SelectState>,
     columns: Vec<TableColumn>,
     rows: Vec<Row>,
     source_name: Option<String>,
@@ -50,7 +57,8 @@ pub struct State {
 /// Open the native dialog attached to an enabled extension command or alias.
 pub fn open(app: &mut CadApp, name: &str) -> bool {
     let Some(command) = app.session.extension_command_ui(name) else { return false };
-    let CommandUi::Table { title, description, submit_label, accent, columns } = command.ui;
+    let CommandUi::Table { title, description, submit_label, accent, selects, columns } = command.ui;
+    let selects = selects.into_iter().map(|spec| SelectState { value: spec.default.clone(), spec }).collect();
     app.extension_table = State {
         command_id: command.command_id,
         extension_name: command.extension_name,
@@ -58,6 +66,7 @@ pub fn open(app: &mut CadApp, name: &str) -> bool {
         description,
         submit_label,
         accent,
+        selects,
         rows: vec![Row::empty(columns.len())],
         columns,
         source_name: None,
@@ -101,6 +110,21 @@ fn table_ui(ui: &mut egui::Ui, state: &mut State, action: &mut Option<Action>) {
         });
     });
     ui.add_space(8.0);
+    for select in &mut state.selects {
+        ui.horizontal(|ui| {
+            ui.strong(&select.spec.label);
+            let selected =
+                select.spec.choices.iter().find(|choice| choice.value == select.value).map_or(select.value.as_str(), |choice| choice.label.as_str());
+            egui::ComboBox::from_id_salt(("extension-table-select", &select.spec.key)).selected_text(selected).width(330.0).show_ui(ui, |ui| {
+                for choice in &select.spec.choices {
+                    ui.selectable_value(&mut select.value, choice.value.clone(), &choice.label);
+                }
+            });
+        });
+    }
+    if !state.selects.is_empty() {
+        ui.add_space(4.0);
+    }
     ui.horizontal_wrapped(|ui| {
         if ui.button("Open CSV / text...").clicked() {
             *action = Some(Action::Load);
@@ -335,7 +359,12 @@ fn parameters(state: &State) -> Result<Value, String> {
         }
         rows.push(Value::Object(object));
     }
-    Ok(Value::Object(Map::from_iter([("rows".into(), Value::Array(rows))])))
+    let mut params = Map::new();
+    for select in &state.selects {
+        params.insert(select.spec.key.clone(), Value::String(select.value.clone()));
+    }
+    params.insert("rows".into(), Value::Array(rows));
+    Ok(Value::Object(params))
 }
 
 fn parse_number(value: &str) -> Option<f64> {
@@ -442,9 +471,10 @@ fn parse_color(value: &str) -> Option<Color32> {
 
 #[cfg(test)]
 mod tests {
-    use cadcraft_extensions::{TableColumn, TableColumnKind};
+    use cadcraft_extensions::{TableColumn, TableColumnKind, TableSelect, TableSelectChoice};
+    use serde_json::json;
 
-    use super::{LoadedTextTable, State, parse_table, validate};
+    use super::{LoadedTextTable, Row, SelectState, State, parameters, parse_table, validate};
 
     fn columns() -> Vec<TableColumn> {
         vec![
@@ -494,5 +524,76 @@ mod tests {
         let state = State { columns: columns(), rows: rows.ok().unwrap_or_default(), ..State::default() };
         let validation = validate(&state);
         assert_eq!((validation.valid_rows, validation.invalid_rows), (0, 2));
+    }
+
+    #[test]
+    fn selector_values_are_submitted_next_to_rows() {
+        let columns = columns();
+        let state = State {
+            selects: vec![SelectState {
+                spec: TableSelect {
+                    key: "convention".into(),
+                    label: "Coordinate convention".into(),
+                    default: "cad-xy".into(),
+                    choices: vec![
+                        TableSelectChoice { value: "cad-xy".into(), label: "CAD / GIS".into() },
+                        TableSelectChoice { value: "survey-xy".into(), label: "Survey / TopoLT".into() },
+                    ],
+                },
+                value: "survey-xy".into(),
+            }],
+            rows: vec![Row { selected: false, values: vec!["L1".into(), "337275.053".into(), "595286.485".into()] }],
+            columns,
+            ..State::default()
+        };
+
+        let params = parameters(&state);
+
+        assert_eq!(
+            params.ok(),
+            Some(json!({
+                "convention": "survey-xy",
+                "rows": [{"number": "L1", "northing": 337275.053, "easting": 595286.485}]
+            }))
+        );
+    }
+
+    #[test]
+    fn literal_xy_headers_are_mapped_by_name_even_when_the_file_lists_y_first() {
+        let columns = vec![
+            TableColumn {
+                key: "number".into(),
+                label: "Point number".into(),
+                kind: TableColumnKind::Text,
+                required: true,
+                unique: true,
+                aliases: vec!["code".into()],
+            },
+            TableColumn {
+                key: "x".into(),
+                label: "Input X".into(),
+                kind: TableColumnKind::Number,
+                required: true,
+                unique: false,
+                aliases: vec!["easting".into()],
+            },
+            TableColumn {
+                key: "y".into(),
+                label: "Input Y".into(),
+                kind: TableColumnKind::Number,
+                required: true,
+                unique: false,
+                aliases: vec!["northing".into()],
+            },
+        ];
+        let source = LoadedTextTable { name: "topolt.csv".into(), text: "Y,X,Code\n595286.485,337275.053,L1\n".into() };
+
+        let rows = parse_table(&source, &columns);
+
+        assert!(rows.is_ok());
+        assert_eq!(
+            rows.ok().and_then(|rows| rows.first().cloned()).map(|row| row.values),
+            Some(vec!["L1".into(), "337275.053".into(), "595286.485".into()])
+        );
     }
 }

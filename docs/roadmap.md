@@ -85,7 +85,7 @@ agents that built each milestone, are in the progress log of [ROADMAP.md](../ROA
 | M9 | Parametric | ≈ 50% | 20–30 |
 | M10 | Performance: 1M entities at 60 fps, large DWG loads | ≈ 60% (internal numbers only) | 20–40 |
 | M11 | 3D: UCS, orbit, visual styles, solids, surfaces, meshes, sections, rendering | ≈ 2% | 300–450 |
-| M12 | Automation: AutoLISP, SCRIPT, extensions, action recorder, sheet sets, Express Tools | ≈ 24% (MCP, CLI, control channel, schema 1/2 extension packages and declarative command tables done) | 108–184 |
+| M12 | Automation: AutoLISP, SCRIPT, extensions, action recorder, sheet sets, Express Tools | ≈ 25% (MCP, CLI, control channel, schema 1/2 extension packages, declarative command tables and Tool Sets contributions done) | 108–184 |
 | M13 | 1.0 polish: preferences, workspaces, localisation, accessibility, signed packages, docs | ≈ 15% (signed packages for every platform exist; themes done; string catalog with Ukrainian and German, live language switching, #36) | 110–170 |
 | — | Geometry precision (cross-cutting, see [geometry-parity.md](geometry-parity.md)) | ≈ 40% | 70–110 |
 | — | AI features | ≈ 0% in-app | 40–80 |
@@ -103,6 +103,7 @@ AutoLISP surface, AI features with openly licensed local models, and every remai
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | M12 now includes host-rendered extension command groups in the native Tool Sets palette |
 | 2026-10-16 | minor | M12 now includes host-rendered manual/CSV command tables and schema 2 point/text drawing operations |
 | 2026-10-16 | minor | M12 now includes native schema 2 WASM components with bounded, permissioned and undoable drawing transactions |
 | 2026-10-16 | minor | M12 now includes the schema-1 extension package/runtime and desktop/CLI management; portable WASM modules and richer extension hooks remain |

@@ -263,6 +263,7 @@ mod tests {
                     interactive: true,
                     ui: None,
                 }],
+                toolsets: Vec::new(),
                 homepage: None,
             },
             "(defun example:run (params) 42)".into(),

@@ -36,6 +36,90 @@ pub enum TableColumnKind {
     Number,
 }
 
+/// CADCraft-owned icon available to a command placed in the Tool Sets palette.
+///
+/// Extensions select a semantic icon from this bounded set rather than shipping executable UI
+/// code or borrowing artwork from another application.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolsetIcon {
+    New,
+    Open,
+    Save,
+    Import,
+    Export,
+    Attach,
+    Share,
+    Properties,
+    Layers,
+    Line,
+    Polyline,
+    Circle,
+    Arc,
+    Rectangle,
+    Polygon,
+    Ellipse,
+    Spline,
+    Point,
+    Hatch,
+    Region,
+    Table,
+    Text,
+    Move,
+    Copy,
+    Rotate,
+    Settings,
+}
+
+/// Existing CADCraft Tool Sets tab that receives an extension-owned group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolsetTab {
+    Drafting,
+    Modeling,
+}
+
+/// Visual size of one Tool Sets command button.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolsetSize {
+    #[default]
+    Large,
+    Small,
+}
+
+/// Placement of an extension group relative to CADCraft's built-in groups.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolsetPosition {
+    Top,
+    #[default]
+    Bottom,
+}
+
+/// One command button inside an extension-owned Tool Sets group.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolsetTool {
+    pub command: String,
+    pub icon: ToolsetIcon,
+    #[serde(default)]
+    pub size: ToolsetSize,
+}
+
+/// A bounded, declarative group inserted into one of CADCraft's native Tool Sets tabs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Toolset {
+    pub tab: ToolsetTab,
+    pub group: String,
+    #[serde(default)]
+    pub position: ToolsetPosition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+    pub tools: Vec<ToolsetTool>,
+}
+
 /// One bounded, declarative column rendered by CADCraft rather than extension code.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -52,6 +136,25 @@ pub struct TableColumn {
     pub aliases: Vec<String>,
 }
 
+/// One value in a host-rendered table-dialog selector.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableSelectChoice {
+    pub value: String,
+    pub label: String,
+}
+
+/// A bounded selector rendered once above a table. Its selected value is submitted as a top-level
+/// JSON field alongside `rows`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableSelect {
+    pub key: String,
+    pub label: String,
+    pub default: String,
+    pub choices: Vec<TableSelectChoice>,
+}
+
 /// Optional native UI presented only for a menu, toolbar or typed invocation. Programmatic
 /// command execution still calls the guest directly and never opens a dialog.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +166,8 @@ pub enum CommandUi {
         submit_label: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         accent: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        selects: Vec<TableSelect>,
         columns: Vec<TableColumn>,
     },
 }
@@ -118,6 +223,9 @@ pub struct Manifest {
     pub permissions: Vec<Permission>,
     #[serde(default)]
     pub commands: Vec<Command>,
+    /// Native Tool Sets groups contributed by this extension.
+    #[serde(default)]
+    pub toolsets: Vec<Toolset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub homepage: Option<String>,
 }
@@ -277,7 +385,7 @@ impl Manifest {
             if self.schema_version == 2 && command.interactive {
                 return Err(ValidationError::new(format!("{base}.interactive"), "schema 2 commands are programmatic in this release"));
             }
-            if let Some(CommandUi::Table { title, description, submit_label, accent, columns }) = &command.ui {
+            if let Some(CommandUi::Table { title, description, submit_label, accent, selects, columns }) = &command.ui {
                 if command.interactive {
                     return Err(ValidationError::new(format!("{base}.ui"), "a host-rendered dialog cannot also use an interactive command prompt"));
                 }
@@ -286,6 +394,41 @@ impl Manifest {
                 }
                 if accent.as_deref().is_some_and(|value| !color(value)) {
                     return Err(ValidationError::new(format!("{base}.ui.accent"), "must be a #RRGGBB colour"));
+                }
+                if selects.len() > 8 {
+                    return Err(ValidationError::new(format!("{base}.ui.selects"), "must contain at most 8 selectors"));
+                }
+                let mut select_keys = HashSet::new();
+                for (select_index, select) in selects.iter().enumerate() {
+                    let field = format!("{base}.ui.selects[{select_index}]");
+                    if select.key.eq_ignore_ascii_case("rows")
+                        || select.key.len() > 64
+                        || !command_name(&select.key)
+                        || !select_keys.insert(select.key.to_ascii_lowercase())
+                    {
+                        return Err(ValidationError::new(format!("{field}.key"), "must be a unique lower-case field name"));
+                    }
+                    if !printable(&select.label, 80) {
+                        return Err(ValidationError::new(format!("{field}.label"), "must contain 1 to 80 printable characters"));
+                    }
+                    if select.choices.len() < 2 || select.choices.len() > 16 {
+                        return Err(ValidationError::new(format!("{field}.choices"), "must contain between 2 and 16 choices"));
+                    }
+                    let mut values = HashSet::new();
+                    for (choice_index, choice) in select.choices.iter().enumerate() {
+                        if choice.value.len() > 64 || !command_name(&choice.value) || !values.insert(choice.value.to_ascii_lowercase()) {
+                            return Err(ValidationError::new(format!("{field}.choices[{choice_index}].value"), "must be a unique lower-case value"));
+                        }
+                        if !printable(&choice.label, 120) {
+                            return Err(ValidationError::new(
+                                format!("{field}.choices[{choice_index}].label"),
+                                "must contain 1 to 120 printable characters",
+                            ));
+                        }
+                    }
+                    if !select.choices.iter().any(|choice| choice.value == select.default) {
+                        return Err(ValidationError::new(format!("{field}.default"), "must match one declared choice value"));
+                    }
                 }
                 if columns.is_empty() || columns.len() > 12 {
                     return Err(ValidationError::new(format!("{base}.ui.columns"), "must contain between 1 and 12 columns"));
@@ -302,6 +445,39 @@ impl Manifest {
                     if column.aliases.len() > 16 || column.aliases.iter().any(|alias| !printable(alias, 80)) {
                         return Err(ValidationError::new(format!("{field}.aliases"), "must contain at most 16 bounded printable aliases"));
                     }
+                }
+            }
+        }
+        if self.toolsets.len() > 16 {
+            return Err(ValidationError::new("toolsets", "contains more than 16 groups"));
+        }
+        let mut toolset_groups = HashSet::new();
+        let mut placed_commands = HashSet::new();
+        for (index, toolset) in self.toolsets.iter().enumerate() {
+            let base = format!("toolsets[{index}]");
+            if !printable(&toolset.group, 80) {
+                return Err(ValidationError::new(format!("{base}.group"), "must contain 1 to 80 printable characters"));
+            }
+            let group_key = (toolset.tab, toolset.group.to_ascii_lowercase());
+            if !toolset_groups.insert(group_key) {
+                return Err(ValidationError::new(format!("{base}.group"), "duplicates another group on the same tab"));
+            }
+            if toolset.accent.as_deref().is_some_and(|value| !color(value)) {
+                return Err(ValidationError::new(format!("{base}.accent"), "must be a #RRGGBB colour"));
+            }
+            if toolset.tools.is_empty() || toolset.tools.len() > 32 {
+                return Err(ValidationError::new(format!("{base}.tools"), "must contain between 1 and 32 tools"));
+            }
+            for (tool_index, tool) in toolset.tools.iter().enumerate() {
+                let command = tool.command.to_ascii_lowercase();
+                if !ids.contains(&command) {
+                    return Err(ValidationError::new(
+                        format!("{base}.tools[{tool_index}].command"),
+                        "must reference a command declared by this extension",
+                    ));
+                }
+                if !placed_commands.insert(command) {
+                    return Err(ValidationError::new(format!("{base}.tools[{tool_index}].command"), "is already placed in another Tool Sets group"));
                 }
             }
         }
@@ -356,6 +532,7 @@ mod tests {
                 interactive: true,
                 ui: None,
             }],
+            toolsets: vec![],
             homepage: Some("https://example.invalid/extension".into()),
         }
     }
@@ -403,6 +580,15 @@ mod tests {
             description: "Type rows or open a CSV file.".into(),
             submit_label: "Insert points".into(),
             accent: Some("#F47C20".into()),
+            selects: vec![TableSelect {
+                key: "coordinate-convention".into(),
+                label: "Coordinate convention".into(),
+                default: "cad-xy".into(),
+                choices: vec![
+                    TableSelectChoice { value: "cad-xy".into(), label: "CAD / GIS X-Y".into() },
+                    TableSelectChoice { value: "survey-xy".into(), label: "Survey X-Y".into() },
+                ],
+            }],
             columns: vec![TableColumn {
                 key: "number".into(),
                 label: "Point number".into(),
@@ -413,5 +599,23 @@ mod tests {
             }],
         });
         assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn accepts_toolsets_and_rejects_unknown_or_duplicate_commands() {
+        let mut manifest = good();
+        manifest.toolsets.push(Toolset {
+            tab: ToolsetTab::Drafting,
+            group: "My Extension".into(),
+            position: ToolsetPosition::Top,
+            accent: Some("#F47A20".into()),
+            tools: vec![ToolsetTool { command: "examplehello".into(), icon: ToolsetIcon::Import, size: ToolsetSize::Large }],
+        });
+        assert!(manifest.validate().is_ok());
+
+        manifest.toolsets[0].tools.push(ToolsetTool { command: "missing".into(), icon: ToolsetIcon::Point, size: ToolsetSize::Small });
+        assert!(manifest.validate().is_err());
+        manifest.toolsets[0].tools[1].command = "examplehello".into();
+        assert!(manifest.validate().is_err());
     }
 }
