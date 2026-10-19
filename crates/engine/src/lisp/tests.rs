@@ -478,14 +478,17 @@ fn a_waiting_routine_is_a_prompt_with_a_rubber_band() {
 #[test]
 fn entsel_with_a_custom_message_keeps_the_pickbox() {
     let mut s = session();
+    ok(&mut s, "(entmake '((0 . \"LINE\") (10 0 0 0) (11 5 0 0)))");
     for name in ["entsel", "nentsel"] {
-        s.cmdline(&format!("({name} \"\\nPick a thing: \")")).unwrap();
+        s.last_point = cadcraft_geom::Vec2::new(99.0, 99.0);
+        s.cmdline(&format!("(setq picked ({name} \"\\nPick a thing: \"))")).unwrap();
         let prompt = s.current_prompt().unwrap();
         assert!(prompt.raw);
         assert_eq!(prompt.display(), "Pick a thing: ");
         assert!(prompt.accept.select, "{name} must explicitly request object selection");
         assert!(s.picking_objects(), "{name} must show the pickbox for any prompt message");
-        s.cancel();
+        s.input(crate::Input::Point(cadcraft_geom::Vec2::new(4.0, 0.0))).unwrap();
+        assert_eq!(ok(&mut s, "(cadr picked)"), "(4.0 0.0 0.0)", "{name} must return the click point");
     }
 }
 
