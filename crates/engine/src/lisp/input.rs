@@ -53,7 +53,8 @@ impl GetRequest {
     pub fn prompt(&self) -> Prompt {
         let any = self.initget.bits & 128 != 0 || !self.initget.keywords.is_empty();
         let accept = match self.kind {
-            GetKind::Point | GetKind::Corner | GetKind::EntSel => Accept { text: any, ..Accept::POINT },
+            GetKind::Point | GetKind::Corner => Accept { text: any, ..Accept::POINT },
+            GetKind::EntSel => Accept { text: any, ..Accept::SELECT },
             GetKind::Dist | GetKind::Angle { .. } => Accept { text: any, ..Accept::POINT_OR_NUMBER },
             GetKind::Real | GetKind::Int => Accept { text: any, ..Accept::NUMBER },
             GetKind::String { .. } | GetKind::Kword => Accept::TEXT,

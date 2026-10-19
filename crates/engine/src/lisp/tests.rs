@@ -476,6 +476,20 @@ fn a_waiting_routine_is_a_prompt_with_a_rubber_band() {
 }
 
 #[test]
+fn entsel_with_a_custom_message_keeps_the_pickbox() {
+    let mut s = session();
+    for name in ["entsel", "nentsel"] {
+        s.cmdline(&format!("({name} \"\\nPick a thing: \")")).unwrap();
+        let prompt = s.current_prompt().unwrap();
+        assert!(prompt.raw);
+        assert_eq!(prompt.display(), "Pick a thing: ");
+        assert!(prompt.accept.select, "{name} must explicitly request object selection");
+        assert!(s.picking_objects(), "{name} must show the pickbox for any prompt message");
+        s.cancel();
+    }
+}
+
+#[test]
 fn a_leading_newline_ends_the_command_line_instead_of_adding_an_empty_one() {
     let mut s = session();
     let from = s.log.len();
